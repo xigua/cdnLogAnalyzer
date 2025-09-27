@@ -661,6 +661,8 @@ class LogAnalyzer:
         }
 
 analyzer = LogAnalyzer()
+# Global storage for log entries to persist between requests
+global_log_entries = []
 
 @app.route('/')
 def index():
@@ -767,6 +769,10 @@ def analyze_logs_with_progress():
             }
             yield progress_callback(analysis_data)
 
+            # Store entries globally for IP details lookup
+            global global_log_entries
+            global_log_entries = analyzer_instance.entries.copy()
+
             # Run analysis with progress tracking (step by step)
             analysis_steps = [
                 ("Computing basic statistics", analyzer_instance._compute_basic_stats),
@@ -836,6 +842,47 @@ def analyze_logs_with_progress():
             'Access-Control-Allow-Headers': 'Content-Type'
         }
     )
+
+@app.route('/api/ip-details', methods=['POST'])
+def get_ip_details():
+    ip = request.json.get('ip')
+
+    if not ip:
+        return jsonify({'error': 'IP address is required'}), 400
+
+    try:
+        global global_log_entries
+
+        if not global_log_entries:
+            return jsonify({'error': 'No log data available. Please run analysis first.'}), 400
+
+        # Filter entries for the specified IP and sort by timestamp
+        ip_entries = [
+            {
+                'timestamp': entry.timestamp.isoformat(),
+                'method': entry.method,
+                'url': entry.url,
+                'status_code': entry.status_code,
+                'response_time': entry.response_time,
+                'bytes_sent': entry.bytes_sent,
+                'user_agent': entry.user_agent,
+                'cache_status': entry.cache_status
+            }
+            for entry in global_log_entries
+            if entry.ip == ip
+        ]
+
+        # Sort by timestamp (ascending - oldest first)
+        ip_entries.sort(key=lambda x: x['timestamp'])
+
+        return jsonify({
+            'ip': ip,
+            'requests': ip_entries,
+            'count': len(ip_entries)
+        })
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=8080)

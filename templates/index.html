@@ -199,6 +199,51 @@
                     </div>
                 </div>
             </div>
+
+            <!-- IP Search and Details -->
+            <div class="bg-white rounded-lg shadow-lg p-6 mt-8">
+                <h3 class="text-xl font-semibold mb-4">IP Address Analysis</h3>
+
+                <div class="mb-4">
+                    <label for="ipSearchInput" class="block text-sm font-medium text-gray-700 mb-2">Search IP Address:</label>
+                    <div class="flex gap-2">
+                        <input type="text" id="ipSearchInput" placeholder="Enter IP address (e.g., 192.168.1.1)"
+                               class="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                               onkeypress="if(event.key==='Enter') searchIPDetails()">
+                        <button onclick="searchIPDetails()"
+                                class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 focus:ring-2 focus:ring-blue-500 focus:ring-offset-2">
+                            Search
+                        </button>
+                    </div>
+                </div>
+
+                <div id="ipDetailsContainer" class="hidden">
+                    <div class="border-t pt-4">
+                        <h4 class="text-lg font-medium mb-3">Requests from <span id="selectedIP" class="font-mono text-blue-600"></span></h4>
+
+                        <div class="mb-4 text-sm text-gray-600">
+                            <span id="ipRequestCount">0</span> requests found, sorted by time (oldest first)
+                        </div>
+
+                        <div class="overflow-x-auto max-h-96 overflow-y-auto">
+                            <table class="min-w-full divide-y divide-gray-200">
+                                <thead class="bg-gray-50 sticky top-0">
+                                    <tr>
+                                        <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Time</th>
+                                        <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Method</th>
+                                        <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">URL</th>
+                                        <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                                        <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Response Time</th>
+                                        <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Bytes Sent</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="ipRequestsTable" class="bg-white divide-y divide-gray-200">
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -265,6 +310,7 @@
                         currentEventSource = null;
                         clearInterval(progressInterval);
                         progressInterval = null;
+                        analysisData = progressData.results;  // Store the analysis data
                         displayResults(progressData.results);
                         resultsContainer.classList.remove('hidden');
                         loadingIndicator.classList.add('hidden');
@@ -435,7 +481,8 @@
             const tbody = document.getElementById('topIPsTable');
             tbody.innerHTML = trafficData.slice(0, 10).map(item => `
                 <tr>
-                    <td class="px-6 py-4 whitespace-nowrap text-sm font-mono text-gray-900">${item.ip}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm font-mono text-blue-600 cursor-pointer hover:underline"
+                        onclick="showIPDetails('${item.ip}')" title="Click to view detailed requests">${item.ip}</td>
                     <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">${item.requests.toLocaleString()}</td>
                     <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">${(item.bytes_sent / 1024 / 1024).toFixed(2)}</td>
                     <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">${item.requests_per_minute.toFixed(2)}</td>
@@ -484,6 +531,87 @@
             if (seconds < 60) return Math.round(seconds) + 's';
             if (seconds < 3600) return Math.round(seconds / 60) + 'm';
             return Math.round(seconds / 3600) + 'h';
+        }
+
+        function showIPDetails(ip) {
+            document.getElementById('ipSearchInput').value = ip;
+            searchIPDetails();
+
+            // Auto-scroll to the IP details section
+            setTimeout(() => {
+                document.getElementById('ipDetailsContainer').scrollIntoView({
+                    behavior: 'smooth',
+                    block: 'start'
+                });
+            }, 100);
+        }
+
+        async function searchIPDetails() {
+            const ip = document.getElementById('ipSearchInput').value.trim();
+            if (!ip) {
+                alert('Please enter an IP address');
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/ip-details', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ip: ip })
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    displayIPDetails(ip, data.requests);
+                } else {
+                    alert('Error: ' + data.error);
+                }
+            } catch (error) {
+                alert('Error fetching IP details: ' + error.message);
+            }
+        }
+
+        function displayIPDetails(ip, requests) {
+            document.getElementById('selectedIP').textContent = ip;
+            document.getElementById('ipRequestCount').textContent = requests.length;
+
+            const tbody = document.getElementById('ipRequestsTable');
+            tbody.innerHTML = requests.map(req => `
+                <tr>
+                    <td class="px-3 py-2 whitespace-nowrap text-sm text-gray-900">${formatTimestamp(req.timestamp)}</td>
+                    <td class="px-3 py-2 whitespace-nowrap text-sm text-gray-900">${req.method}</td>
+                    <td class="px-3 py-2 text-sm text-gray-900" title="${req.url}">${truncateText(req.url, 50)}</td>
+                    <td class="px-3 py-2 whitespace-nowrap text-sm text-gray-900">
+                        <span class="px-2 py-1 text-xs rounded-full ${getStatusColor(req.status_code)}">${req.status_code}</span>
+                    </td>
+                    <td class="px-3 py-2 whitespace-nowrap text-sm text-gray-900">${req.response_time}ms</td>
+                    <td class="px-3 py-2 whitespace-nowrap text-sm text-gray-900">${formatBytes(req.bytes_sent)}</td>
+                </tr>
+            `).join('');
+
+            document.getElementById('ipDetailsContainer').classList.remove('hidden');
+        }
+
+        function formatTimestamp(timestamp) {
+            const date = new Date(timestamp);
+            return date.toLocaleString();
+        }
+
+        function getStatusColor(statusCode) {
+            if (statusCode >= 200 && statusCode < 300) return 'bg-green-100 text-green-800';
+            if (statusCode >= 300 && statusCode < 400) return 'bg-yellow-100 text-yellow-800';
+            if (statusCode >= 400 && statusCode < 500) return 'bg-red-100 text-red-800';
+            if (statusCode >= 500) return 'bg-purple-100 text-purple-800';
+            return 'bg-gray-100 text-gray-800';
+        }
+
+        function formatBytes(bytes) {
+            if (bytes === 0) return '0 B';
+            const k = 1024;
+            const sizes = ['B', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
         }
 
         // Set default directory path
