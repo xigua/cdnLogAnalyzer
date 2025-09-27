@@ -265,7 +265,7 @@ class LogAnalyzer:
 
         return results
 
-    def generate_analysis_with_progress(self, progress_callback):
+    def generate_analysis_with_progress(self, progress_callback, total_files_processed):
         """Generator that yields progress updates and final results"""
         if not self.entries:
             yield {}
@@ -290,9 +290,9 @@ class LogAnalyzer:
             progress_data = {
                 'progress': min(analysis_progress, 1.0),  # Ensure never exceeds 1.0
                 'message': step_name,
-                'current_file_index': None,
-                'total_files': None,
-                'current_file': '',
+                'current_file_index': total_files_processed,  # Keep file count consistent
+                'total_files': total_files_processed,
+                'current_file': f'Analysis step {i+1}/{total_steps}',
                 'estimated_remaining_seconds': max(0, (total_steps - i) * 1)
             }
             yield progress_callback(progress_data)
@@ -315,6 +315,107 @@ class LogAnalyzer:
                 results['performance_stats'] = step_func()
 
         yield results
+
+    def _run_analysis_with_progress(self, progress_callback, total_files_processed):
+        """Run analysis with progress updates for SSE"""
+        if not self.entries:
+            return {}
+
+        analysis_steps = [
+            ("Computing basic statistics", self._compute_basic_stats),
+            ("Analyzing traffic by IP", self.analyze_traffic_by_ip),
+            ("Analyzing traffic by URL", self.analyze_traffic_by_url),
+            ("Analyzing hourly traffic patterns", self.analyze_hourly_traffic),
+            ("Analyzing user behavior", self.analyze_user_behavior),
+            ("Detecting suspicious patterns", self.detect_suspicious_patterns),
+            ("Computing performance statistics", self.analyze_performance)
+        ]
+
+        results = {}
+        total_steps = len(analysis_steps)
+
+        for i, (step_name, step_func) in enumerate(analysis_steps):
+            # Send progress update
+            analysis_progress = 0.85 + (i / total_steps) * 0.15
+            progress_data = {
+                'progress': min(analysis_progress, 1.0),
+                'message': step_name,
+                'current_file_index': total_files_processed,
+                'total_files': total_files_processed,
+                'current_file': f'Step {i+1}/{total_steps}',
+                'estimated_remaining_seconds': max(0, (total_steps - i) * 1)
+            }
+
+            # Execute the analysis step
+            if step_name == "Computing basic statistics":
+                basic_stats = step_func()
+                results['basic_stats'] = basic_stats
+            elif step_name == "Analyzing traffic by IP":
+                results['traffic_by_ip'] = step_func()
+            elif step_name == "Analyzing traffic by URL":
+                results['traffic_by_url'] = step_func()
+            elif step_name == "Analyzing hourly traffic patterns":
+                results['hourly_traffic'] = step_func()
+            elif step_name == "Analyzing user behavior":
+                results['user_behavior'] = step_func()
+            elif step_name == "Detecting suspicious patterns":
+                results['suspicious_patterns'] = step_func()
+            elif step_name == "Computing performance statistics":
+                results['performance_stats'] = step_func()
+
+        return results
+
+    def _run_analysis_with_progress_sse(self, progress_callback, total_files_processed):
+        """Run analysis with progress updates specifically for SSE streaming"""
+        if not self.entries:
+            return {}
+
+        analysis_steps = [
+            ("Computing basic statistics", self._compute_basic_stats),
+            ("Analyzing traffic by IP", self.analyze_traffic_by_ip),
+            ("Analyzing traffic by URL", self.analyze_traffic_by_url),
+            ("Analyzing hourly traffic patterns", self.analyze_hourly_traffic),
+            ("Analyzing user behavior", self.analyze_user_behavior),
+            ("Detecting suspicious patterns", self.detect_suspicious_patterns),
+            ("Computing performance statistics", self.analyze_performance)
+        ]
+
+        results = {}
+        total_steps = len(analysis_steps)
+
+        for i, (step_name, step_func) in enumerate(analysis_steps):
+            # Send progress update directly through the generator
+            analysis_progress = 0.85 + (i / total_steps) * 0.15
+            progress_data = {
+                'progress': min(analysis_progress, 1.0),
+                'message': step_name,
+                'current_file_index': total_files_processed,
+                'total_files': total_files_processed,
+                'current_file': f'Step {i+1}/{total_steps}',
+                'estimated_remaining_seconds': max(0, (total_steps - i) * 1)
+            }
+
+            # Send progress update through SSE
+            yield progress_callback(progress_data)
+
+            # Execute the analysis step
+            if step_name == "Computing basic statistics":
+                basic_stats = step_func()
+                results['basic_stats'] = basic_stats
+            elif step_name == "Analyzing traffic by IP":
+                results['traffic_by_ip'] = step_func()
+            elif step_name == "Analyzing traffic by URL":
+                results['traffic_by_url'] = step_func()
+            elif step_name == "Analyzing hourly traffic patterns":
+                results['hourly_traffic'] = step_func()
+            elif step_name == "Analyzing user behavior":
+                results['user_behavior'] = step_func()
+            elif step_name == "Detecting suspicious patterns":
+                results['suspicious_patterns'] = step_func()
+            elif step_name == "Computing performance statistics":
+                results['performance_stats'] = step_func()
+
+        return results
 
     def _compute_basic_stats(self) -> Dict[str, Any]:
         """Compute basic statistics efficiently"""
@@ -666,18 +767,48 @@ def analyze_logs_with_progress():
             }
             yield progress_callback(analysis_data)
 
-            # Generate final results with progress tracking
-            def analysis_progress_callback(data):
-                return progress_callback(data)
+            # Run analysis with progress tracking (step by step)
+            analysis_steps = [
+                ("Computing basic statistics", analyzer_instance._compute_basic_stats),
+                ("Analyzing traffic by IP", analyzer_instance.analyze_traffic_by_ip),
+                ("Analyzing traffic by URL", analyzer_instance.analyze_traffic_by_url),
+                ("Analyzing hourly traffic patterns", analyzer_instance.analyze_hourly_traffic),
+                ("Analyzing user behavior", analyzer_instance.analyze_user_behavior),
+                ("Detecting suspicious patterns", analyzer_instance.detect_suspicious_patterns),
+                ("Computing performance statistics", analyzer_instance.analyze_performance)
+            ]
 
-            # Collect progress updates from analysis
-            analysis_generator = analyzer_instance.generate_analysis_with_progress(analysis_progress_callback)
-            results = None
-            for item in analysis_generator:
-                if isinstance(item, str):  # Progress update
-                    yield item
-                else:  # Final results
-                    results = item
+            results = {}
+            total_steps = len(analysis_steps)
+
+            for i, (step_name, step_func) in enumerate(analysis_steps):
+                # Send progress update
+                analysis_progress = 0.85 + (i / total_steps) * 0.15
+                progress_data = {
+                    'progress': min(analysis_progress, 1.0),
+                    'message': step_name,
+                    'current_file_index': total_files,
+                    'total_files': total_files,
+                    'current_file': f'Step {i+1}/{total_steps}',
+                    'estimated_remaining_seconds': max(0, (total_steps - i) * 1)
+                }
+                yield progress_callback(progress_data)
+
+                # Execute analysis step
+                if step_name == "Computing basic statistics":
+                    results['basic_stats'] = step_func()
+                elif step_name == "Analyzing traffic by IP":
+                    results['traffic_by_ip'] = step_func()
+                elif step_name == "Analyzing traffic by URL":
+                    results['traffic_by_url'] = step_func()
+                elif step_name == "Analyzing hourly traffic patterns":
+                    results['hourly_traffic'] = step_func()
+                elif step_name == "Analyzing user behavior":
+                    results['user_behavior'] = step_func()
+                elif step_name == "Detecting suspicious patterns":
+                    results['suspicious_patterns'] = step_func()
+                elif step_name == "Computing performance statistics":
+                    results['performance_stats'] = step_func()
 
             # Send completion message
             completion_data = {

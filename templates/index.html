@@ -5,7 +5,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>CDN Log Analyzer</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/date-fns@2.29.3/index.min.js"></script>
     <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
     <style>
         .chart-container { position: relative; height: 400px; margin: 20px 0; }
@@ -207,12 +206,37 @@
         let analysisData = null;
         let progressStartTime = null;
         let progressInterval = null;
+        let currentEventSource = null;
+        let hourlyTrafficChart = null;
+        let cachePerformanceChart = null;
 
         async function analyzeDirectory() {
             const directoryPath = document.getElementById('directoryPath').value;
             if (!directoryPath) {
                 alert('Please enter a directory path');
                 return;
+            }
+
+            // Close any existing EventSource connection
+            if (currentEventSource) {
+                currentEventSource.close();
+                currentEventSource = null;
+            }
+
+            // Clear any existing intervals
+            if (progressInterval) {
+                clearInterval(progressInterval);
+                progressInterval = null;
+            }
+
+            // Destroy existing charts
+            if (hourlyTrafficChart) {
+                hourlyTrafficChart.destroy();
+                hourlyTrafficChart = null;
+            }
+            if (cachePerformanceChart) {
+                cachePerformanceChart.destroy();
+                cachePerformanceChart = null;
             }
 
             const loadingIndicator = document.getElementById('loadingIndicator');
@@ -229,31 +253,42 @@
 
             try {
                 // Start SSE connection for progress updates
-                const eventSource = new EventSource(`/api/analyze/progress?directory_path=${encodeURIComponent(directoryPath)}`);
+                currentEventSource = new EventSource(`/api/analyze/progress?directory_path=${encodeURIComponent(directoryPath)}`);
 
-                eventSource.onmessage = function(event) {
+                currentEventSource.onmessage = function(event) {
                     const progressData = JSON.parse(event.data);
                     updateProgress(progressData);
 
                     // If processing is complete, get the final results
                     if (progressData.status === 'completed') {
-                        eventSource.close();
+                        currentEventSource.close();
+                        currentEventSource = null;
                         clearInterval(progressInterval);
+                        progressInterval = null;
                         displayResults(progressData.results);
                         resultsContainer.classList.remove('hidden');
                         loadingIndicator.classList.add('hidden');
                     }
                 };
 
-                eventSource.onerror = function(event) {
-                    eventSource.close();
-                    clearInterval(progressInterval);
+                currentEventSource.onerror = function(event) {
+                    if (currentEventSource) {
+                        currentEventSource.close();
+                        currentEventSource = null;
+                    }
+                    if (progressInterval) {
+                        clearInterval(progressInterval);
+                        progressInterval = null;
+                    }
                     loadingIndicator.classList.add('hidden');
                     alert('Error during processing. Please try again.');
                 };
 
             } catch (error) {
-                clearInterval(progressInterval);
+                if (progressInterval) {
+                    clearInterval(progressInterval);
+                    progressInterval = null;
+                }
                 loadingIndicator.classList.add('hidden');
                 alert('Error analyzing logs: ' + error.message);
             }
@@ -332,8 +367,13 @@
         }
 
         function createHourlyTrafficChart(hourlyData) {
+            // Destroy existing chart if it exists
+            if (hourlyTrafficChart) {
+                hourlyTrafficChart.destroy();
+            }
+
             const ctx = document.getElementById('hourlyTrafficChart').getContext('2d');
-            new Chart(ctx, {
+            hourlyTrafficChart = new Chart(ctx, {
                 type: 'line',
                 data: {
                     labels: hourlyData.map(d => d.hour + ':00'),
@@ -365,8 +405,13 @@
         }
 
         function createCachePerformanceChart(performanceStats) {
+            // Destroy existing chart if it exists
+            if (cachePerformanceChart) {
+                cachePerformanceChart.destroy();
+            }
+
             const ctx = document.getElementById('cachePerformanceChart').getContext('2d');
-            new Chart(ctx, {
+            cachePerformanceChart = new Chart(ctx, {
                 type: 'doughnut',
                 data: {
                     labels: Object.keys(performanceStats.cache_status_distribution),
@@ -443,6 +488,34 @@
 
         // Set default directory path
         document.getElementById('directoryPath').value = '/Users/xigua/Downloads/zhisai-logs';
+
+        // Cleanup function for page unload
+        window.addEventListener('beforeunload', function() {
+            if (currentEventSource) {
+                currentEventSource.close();
+            }
+            if (progressInterval) {
+                clearInterval(progressInterval);
+            }
+            if (hourlyTrafficChart) {
+                hourlyTrafficChart.destroy();
+            }
+            if (cachePerformanceChart) {
+                cachePerformanceChart.destroy();
+            }
+        });
+
+        // Also cleanup on page visibility change (when switching tabs)
+        document.addEventListener('visibilitychange', function() {
+            if (document.hidden && currentEventSource) {
+                currentEventSource.close();
+                currentEventSource = null;
+                if (progressInterval) {
+                    clearInterval(progressInterval);
+                    progressInterval = null;
+                }
+            }
+        });
     </script>
 </body>
 </html>
