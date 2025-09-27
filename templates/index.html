@@ -159,6 +159,61 @@
                 </div>
             </div>
 
+            <!-- Static vs Dynamic Traffic Analysis -->
+            <div class="bg-white rounded-lg shadow-lg p-6 mb-8">
+                <h3 class="text-xl font-semibold mb-4">Static vs Dynamic Traffic Analysis</h3>
+
+                <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
+                    <!-- Static Only IPs -->
+                    <div class="bg-red-50 p-4 rounded-lg border border-red-200">
+                        <h4 class="text-lg font-medium text-red-800 mb-2">Static Content Only</h4>
+                        <div class="text-3xl font-bold text-red-600" id="staticOnlyCount">-</div>
+                        <div class="text-sm text-red-700">IPs (<span id="staticOnlyPercentage">-</span>%)</div>
+                        <div class="text-sm text-red-600 mt-1">Traffic: <span id="staticOnlyTraffic">-</span> (<span id="staticOnlyTrafficPercentage">-</span>%)</div>
+                        <div class="text-xs text-red-500 mt-1">⚠️ Potential bots/scrapers</div>
+                    </div>
+
+                    <!-- Mixed Traffic IPs -->
+                    <div class="bg-green-50 p-4 rounded-lg border border-green-200">
+                        <h4 class="text-lg font-medium text-green-800 mb-2">Mixed Content</h4>
+                        <div class="text-3xl font-bold text-green-600" id="mixedCount">-</div>
+                        <div class="text-sm text-green-700">IPs (<span id="mixedPercentage">-</span>%)</div>
+                        <div class="text-sm text-green-600 mt-1">Traffic: <span id="mixedTraffic">-</span> (<span id="mixedTrafficPercentage">-</span>%)</div>
+                        <div class="text-xs text-green-500 mt-1">✅ Likely real users</div>
+                    </div>
+
+                    <!-- Dynamic Only IPs -->
+                    <div class="bg-blue-50 p-4 rounded-lg border border-blue-200">
+                        <h4 class="text-lg font-medium text-blue-800 mb-2">Dynamic Only</h4>
+                        <div class="text-3xl font-bold text-blue-600" id="dynamicOnlyCount">-</div>
+                        <div class="text-sm text-blue-700">IPs (<span id="dynamicOnlyPercentage">-</span>%)</div>
+                        <div class="text-sm text-blue-600 mt-1">Traffic: <span id="dynamicOnlyTraffic">-</span> (<span id="dynamicOnlyTrafficPercentage">-</span>%)</div>
+                        <div class="text-xs text-blue-500 mt-1">🔄 API users only</div>
+                    </div>
+                </div>
+
+                <!-- Top Static-Only IPs -->
+                <div>
+                    <h4 class="text-lg font-medium mb-3 text-red-700">Top Static-Only IPs (Suspicious)</h4>
+                    <div class="overflow-x-auto">
+                        <table class="min-w-full divide-y divide-gray-200">
+                            <thead class="bg-gray-50">
+                                <tr>
+                                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">IP</th>
+                                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Requests</th>
+                                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Traffic (MB)</th>
+                                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Bot Score</th>
+                                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Bot Indicators</th>
+                                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Location</th>
+                                </tr>
+                            </thead>
+                            <tbody id="staticOnlyIPsTable" class="bg-white divide-y divide-gray-200">
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
             <!-- Suspicious Activity Section -->
             <div class="bg-white rounded-lg shadow-lg p-6 mb-8">
                 <h3 class="text-xl font-semibold mb-4">Suspicious Activity & Patterns</h3>
@@ -408,6 +463,9 @@
             populateTopIPsTable(data.traffic_by_ip);
             populateTopURLsTable(data.traffic_by_url);
 
+            // Display static vs dynamic analysis
+            displayStaticVsDynamicAnalysis(data.static_vs_dynamic_analysis);
+
             // Display suspicious activity
             displaySuspiciousActivity(data.suspicious_patterns);
         }
@@ -612,6 +670,120 @@
             const sizes = ['B', 'KB', 'MB', 'GB'];
             const i = Math.floor(Math.log(bytes) / Math.log(k));
             return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+        }
+
+        function displayStaticVsDynamicAnalysis(data) {
+            if (!data) return;
+
+            // Update summary cards
+            document.getElementById('staticOnlyCount').textContent = data.static_only_ips.count.toLocaleString();
+            document.getElementById('staticOnlyPercentage').textContent = data.static_only_ips.percentage.toFixed(1);
+            document.getElementById('staticOnlyTraffic').textContent = formatBytes(data.static_only_ips.traffic_bytes);
+            document.getElementById('staticOnlyTrafficPercentage').textContent = data.static_only_ips.traffic_percentage.toFixed(1);
+
+            document.getElementById('mixedCount').textContent = data.mixed_ips.count.toLocaleString();
+            document.getElementById('mixedPercentage').textContent = data.mixed_ips.percentage.toFixed(1);
+            document.getElementById('mixedTraffic').textContent = formatBytes(data.mixed_ips.traffic_bytes);
+            document.getElementById('mixedTrafficPercentage').textContent = data.mixed_ips.traffic_percentage.toFixed(1);
+
+            document.getElementById('dynamicOnlyCount').textContent = data.dynamic_only_ips.count.toLocaleString();
+            document.getElementById('dynamicOnlyPercentage').textContent = data.dynamic_only_ips.percentage.toFixed(1);
+            document.getElementById('dynamicOnlyTraffic').textContent = formatBytes(data.dynamic_only_ips.traffic_bytes);
+            document.getElementById('dynamicOnlyTrafficPercentage').textContent = data.dynamic_only_ips.traffic_percentage.toFixed(1);
+
+            // Populate static-only IPs table with geolocation
+            populateStaticOnlyIPsTable(data.static_only_ips.top_ips);
+        }
+
+        async function populateStaticOnlyIPsTable(staticOnlyIPs) {
+            const tbody = document.getElementById('staticOnlyIPsTable');
+
+            if (!staticOnlyIPs || staticOnlyIPs.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="6" class="px-3 py-4 text-center text-gray-500">No static-only IPs found</td></tr>';
+                return;
+            }
+
+            // Show loading state
+            tbody.innerHTML = staticOnlyIPs.slice(0, 10).map(item => {
+                const botScore = item.bot_score || 0;
+                const botIndicators = item.bot_indicators || [];
+                const botScoreColor = botScore >= 4 ? 'text-red-600' : botScore >= 2 ? 'text-orange-600' : 'text-yellow-600';
+
+                return `
+                <tr>
+                    <td class="px-3 py-2 whitespace-nowrap text-sm font-mono text-blue-600 cursor-pointer hover:underline"
+                        onclick="showIPDetails('${item.ip}')" title="Click to view detailed requests">${item.ip}</td>
+                    <td class="px-3 py-2 whitespace-nowrap text-sm text-gray-900">${item.total_requests.toLocaleString()}</td>
+                    <td class="px-3 py-2 whitespace-nowrap text-sm text-gray-900">${(item.total_bytes / 1024 / 1024).toFixed(2)}</td>
+                    <td class="px-3 py-2 whitespace-nowrap text-sm font-bold ${botScoreColor}">${botScore}/5</td>
+                    <td class="px-3 py-2 text-sm text-gray-600">
+                        ${botIndicators.length > 0 ?
+                            `<div class="space-y-1">
+                                ${botIndicators.slice(0, 3).map(indicator =>
+                                    `<div class="text-xs bg-red-100 text-red-800 px-2 py-1 rounded">${indicator}</div>`
+                                ).join('')}
+                                ${botIndicators.length > 3 ? `<div class="text-xs text-gray-400">+${botIndicators.length - 3} more</div>` : ''}
+                            </div>` :
+                            '<span class="text-gray-400">None detected</span>'
+                        }
+                    </td>
+                    <td class="px-3 py-2 text-sm text-gray-500" id="location-${item.ip}">Loading...</td>
+                </tr>
+            `;
+            }).join('');
+
+            // Fetch geolocation for each IP
+            for (const item of staticOnlyIPs.slice(0, 10)) {
+                try {
+                    const response = await fetch('/api/ip-geolocation', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ ip: item.ip })
+                    });
+
+                    const geoData = await response.json();
+                    const locationCell = document.getElementById(`location-${item.ip}`);
+
+                    if (response.ok) {
+                        const locationInfo = [];
+
+                        if (geoData.city !== 'Unknown') locationInfo.push(geoData.city);
+                        if (geoData.region !== 'Unknown') locationInfo.push(geoData.region);
+                        if (geoData.country !== 'Unknown') locationInfo.push(geoData.country);
+
+                        const locationText = locationInfo.length > 0 ? locationInfo.join(', ') : 'Unknown';
+
+                        let flagIcon = '';
+                        if (geoData.country_code && geoData.country_code !== 'Unknown') {
+                            flagIcon = `<span class="fi fi-${geoData.country_code.toLowerCase()}" title="${geoData.country}"></span> `;
+                        }
+
+                        let warnings = [];
+                        if (geoData.is_hosting) warnings.push('🏢 Hosting');
+                        if (geoData.is_proxy) warnings.push('🔀 Proxy');
+                        // Only mark as foreign if not from China (since this appears to be a Chinese site)
+                        if (geoData.country !== 'China' && geoData.country !== 'Unknown') warnings.push('🌍 Foreign');
+
+                        locationCell.innerHTML = `
+                            <div class="text-sm">
+                                ${flagIcon}${locationText}
+                                ${geoData.isp !== 'Unknown' ? `<br><span class="text-xs text-gray-400">${geoData.isp}</span>` : ''}
+                                ${warnings.length > 0 ? `<br><span class="text-xs text-red-500">${warnings.join(' ')}</span>` : ''}
+                            </div>
+                        `;
+                    } else {
+                        locationCell.textContent = 'Failed to load';
+                    }
+                } catch (error) {
+                    const locationCell = document.getElementById(`location-${item.ip}`);
+                    if (locationCell) {
+                        locationCell.textContent = 'Error';
+                    }
+                }
+
+                // Small delay to avoid rate limiting
+                await new Promise(resolve => setTimeout(resolve, 200));
+            }
         }
 
         // Set default directory path

@@ -582,6 +582,110 @@ class LogAnalyzer:
             'single_request_sessions': sum(bounce_rate_data)
         }
 
+    def analyze_static_vs_dynamic_traffic(self) -> Dict[str, Any]:
+        """Analyze IPs that only access static content vs those accessing dynamic APIs"""
+        # Group entries by IP
+        ip_behaviors = {}
+
+        for entry in self.entries:
+            ip = entry.ip
+            if ip not in ip_behaviors:
+                ip_behaviors[ip] = {
+                    'static_requests': 0,
+                    'dynamic_requests': 0,
+                    'total_requests': 0,
+                    'total_bytes': 0,
+                    'urls': set(),
+                    'user_agents': set()
+                }
+
+            behavior = ip_behaviors[ip]
+            behavior['total_requests'] += 1
+            behavior['total_bytes'] += entry.bytes_sent
+            behavior['urls'].add(entry.url)
+            behavior['user_agents'].add(entry.user_agent)
+
+            # More conservative approach - only clear API calls and pages that real users access
+            is_dynamic = (
+                entry.url.startswith('/api/') or           # API endpoints
+                '/login' in entry.url or                   # Login related
+                '/weixin' in entry.url or                  # WeChat integration
+                entry.url == '/'                           # Root page only
+            )
+
+            if is_dynamic:
+                behavior['dynamic_requests'] += 1
+            else:
+                behavior['static_requests'] += 1
+
+        # Analyze patterns
+        static_only_ips = []
+        mixed_ips = []
+        dynamic_only_ips = []
+
+        total_static_only_traffic = 0
+        total_mixed_traffic = 0
+        total_dynamic_only_traffic = 0
+        total_traffic = sum(entry.bytes_sent for entry in self.entries)
+
+        for ip, behavior in ip_behaviors.items():
+            ip_data = {
+                'ip': ip,
+                'total_requests': behavior['total_requests'],
+                'static_requests': behavior['static_requests'],
+                'dynamic_requests': behavior['dynamic_requests'],
+                'total_bytes': behavior['total_bytes'],
+                'unique_urls': len(behavior['urls']),
+                'unique_user_agents': len(behavior['user_agents']),
+                'static_percentage': (behavior['static_requests'] / behavior['total_requests'] * 100) if behavior['total_requests'] > 0 else 0
+            }
+
+            if behavior['dynamic_requests'] == 0:
+                static_only_ips.append(ip_data)
+                total_static_only_traffic += behavior['total_bytes']
+            elif behavior['static_requests'] == 0:
+                dynamic_only_ips.append(ip_data)
+                total_dynamic_only_traffic += behavior['total_bytes']
+            else:
+                mixed_ips.append(ip_data)
+                total_mixed_traffic += behavior['total_bytes']
+
+        # Sort by traffic volume
+        static_only_ips.sort(key=lambda x: x['total_bytes'], reverse=True)
+        mixed_ips.sort(key=lambda x: x['total_bytes'], reverse=True)
+
+        # Simplified analysis - just add basic bot indicators without expensive processing
+        for ip_data in static_only_ips:
+            # Since these are already static-only, they get a base bot score
+            ip_data['bot_indicators'] = ['Only static assets', 'No API requests']
+            ip_data['bot_score'] = 2  # Base score for static-only IPs
+
+        return {
+            'static_only_ips': {
+                'count': len(static_only_ips),
+                'percentage': (len(static_only_ips) / len(ip_behaviors) * 100) if ip_behaviors else 0,
+                'traffic_bytes': total_static_only_traffic,
+                'traffic_percentage': (total_static_only_traffic / total_traffic * 100) if total_traffic > 0 else 0,
+                'top_ips': static_only_ips[:20]
+            },
+            'mixed_ips': {
+                'count': len(mixed_ips),
+                'percentage': (len(mixed_ips) / len(ip_behaviors) * 100) if ip_behaviors else 0,
+                'traffic_bytes': total_mixed_traffic,
+                'traffic_percentage': (total_mixed_traffic / total_traffic * 100) if total_traffic > 0 else 0,
+                'top_ips': mixed_ips[:10]
+            },
+            'dynamic_only_ips': {
+                'count': len(dynamic_only_ips),
+                'percentage': (len(dynamic_only_ips) / len(ip_behaviors) * 100) if ip_behaviors else 0,
+                'traffic_bytes': total_dynamic_only_traffic,
+                'traffic_percentage': (total_dynamic_only_traffic / total_traffic * 100) if total_traffic > 0 else 0,
+                'top_ips': dynamic_only_ips[:10]
+            },
+            'total_unique_ips': len(ip_behaviors),
+            'total_traffic_bytes': total_traffic
+        }
+
     def detect_suspicious_patterns(self) -> Dict[str, Any]:
         """Detect suspicious or unusual patterns - optimized version"""
         # Group entries by IP first (single pass)
@@ -780,6 +884,7 @@ def analyze_logs_with_progress():
                 ("Analyzing traffic by URL", analyzer_instance.analyze_traffic_by_url),
                 ("Analyzing hourly traffic patterns", analyzer_instance.analyze_hourly_traffic),
                 ("Analyzing user behavior", analyzer_instance.analyze_user_behavior),
+                ("Analyzing static vs dynamic traffic patterns", analyzer_instance.analyze_static_vs_dynamic_traffic),
                 ("Detecting suspicious patterns", analyzer_instance.detect_suspicious_patterns),
                 ("Computing performance statistics", analyzer_instance.analyze_performance)
             ]
@@ -811,6 +916,8 @@ def analyze_logs_with_progress():
                     results['hourly_traffic'] = step_func()
                 elif step_name == "Analyzing user behavior":
                     results['user_behavior'] = step_func()
+                elif step_name == "Analyzing static vs dynamic traffic patterns":
+                    results['static_vs_dynamic_analysis'] = step_func()
                 elif step_name == "Detecting suspicious patterns":
                     results['suspicious_patterns'] = step_func()
                 elif step_name == "Computing performance statistics":
@@ -883,6 +990,47 @@ def get_ip_details():
 
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+@app.route('/api/ip-geolocation', methods=['POST'])
+def get_ip_geolocation():
+    ip = request.json.get('ip')
+
+    if not ip:
+        return jsonify({'error': 'IP address is required'}), 400
+
+    try:
+        import urllib.request
+        import urllib.parse
+
+        # Using ip-api.com (free service with good accuracy)
+        url = f"http://ip-api.com/json/{ip}?fields=status,message,country,countryCode,region,regionName,city,zip,lat,lon,timezone,isp,org,as,asname,mobile,proxy,hosting"
+
+        with urllib.request.urlopen(url, timeout=5) as response:
+            data = json.loads(response.read().decode())
+
+            if data.get('status') == 'success':
+                return jsonify({
+                    'ip': ip,
+                    'country': data.get('country', 'Unknown'),
+                    'country_code': data.get('countryCode', 'Unknown'),
+                    'region': data.get('regionName', 'Unknown'),
+                    'city': data.get('city', 'Unknown'),
+                    'latitude': data.get('lat', 0),
+                    'longitude': data.get('lon', 0),
+                    'isp': data.get('isp', 'Unknown'),
+                    'organization': data.get('org', 'Unknown'),
+                    'as_number': data.get('as', 'Unknown'),
+                    'as_name': data.get('asname', 'Unknown'),
+                    'is_mobile': data.get('mobile', False),
+                    'is_proxy': data.get('proxy', False),
+                    'is_hosting': data.get('hosting', False),
+                    'timezone': data.get('timezone', 'Unknown')
+                })
+            else:
+                return jsonify({'error': data.get('message', 'Failed to get location data')}), 400
+
+    except Exception as e:
+        return jsonify({'error': f'Failed to get geolocation: {str(e)}'}), 500
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=8080)
