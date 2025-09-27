@@ -31,9 +31,42 @@
                     Analyze Logs
                 </button>
             </div>
-            <div id="loadingIndicator" class="hidden mt-4 text-center">
-                <div class="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
-                <span class="ml-2 text-gray-600">Processing log files...</span>
+            <div id="loadingIndicator" class="hidden mt-4">
+                <div class="text-center mb-4">
+                    <div class="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+                    <span class="ml-2 text-gray-600">Processing log files...</span>
+                </div>
+
+                <!-- Progress Bar -->
+                <div class="bg-gray-200 rounded-full h-4 mb-2">
+                    <div id="progressBar" class="bg-blue-600 h-4 rounded-full transition-all duration-300" style="width: 0%"></div>
+                </div>
+
+                <!-- Progress Info -->
+                <div class="flex justify-between text-sm text-gray-600 mb-2">
+                    <span id="progressText">Initializing...</span>
+                    <span id="progressPercentage">0%</span>
+                </div>
+
+                <!-- File Progress Details -->
+                <div class="bg-gray-50 rounded-lg p-3 text-sm">
+                    <div class="flex justify-between mb-1">
+                        <span>Files processed:</span>
+                        <span id="fileProgress">0 / 0</span>
+                    </div>
+                    <div class="flex justify-between mb-1">
+                        <span>Current file:</span>
+                        <span id="currentFile">-</span>
+                    </div>
+                    <div class="flex justify-between mb-1">
+                        <span>Estimated time remaining:</span>
+                        <span id="timeRemaining">Calculating...</span>
+                    </div>
+                    <div class="flex justify-between">
+                        <span>Elapsed time:</span>
+                        <span id="elapsedTime">0s</span>
+                    </div>
+                </div>
             </div>
         </div>
 
@@ -172,6 +205,8 @@
 
     <script>
         let analysisData = null;
+        let progressStartTime = null;
+        let progressInterval = null;
 
         async function analyzeDirectory() {
             const directoryPath = document.getElementById('directoryPath').value;
@@ -186,26 +221,89 @@
             loadingIndicator.classList.remove('hidden');
             resultsContainer.classList.add('hidden');
 
+            resetProgress();
+            progressStartTime = Date.now();
+
+            // Start elapsed time counter
+            progressInterval = setInterval(updateElapsedTime, 1000);
+
             try {
-                const response = await fetch('/api/analyze', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ directory_path: directoryPath })
-                });
+                // Start SSE connection for progress updates
+                const eventSource = new EventSource(`/api/analyze/progress?directory_path=${encodeURIComponent(directoryPath)}`);
 
-                const data = await response.json();
+                eventSource.onmessage = function(event) {
+                    const progressData = JSON.parse(event.data);
+                    updateProgress(progressData);
 
-                if (response.ok) {
-                    analysisData = data;
-                    displayResults(data);
-                    resultsContainer.classList.remove('hidden');
-                } else {
-                    alert('Error: ' + data.error);
-                }
+                    // If processing is complete, get the final results
+                    if (progressData.status === 'completed') {
+                        eventSource.close();
+                        clearInterval(progressInterval);
+                        displayResults(progressData.results);
+                        resultsContainer.classList.remove('hidden');
+                        loadingIndicator.classList.add('hidden');
+                    }
+                };
+
+                eventSource.onerror = function(event) {
+                    eventSource.close();
+                    clearInterval(progressInterval);
+                    loadingIndicator.classList.add('hidden');
+                    alert('Error during processing. Please try again.');
+                };
+
             } catch (error) {
-                alert('Error analyzing logs: ' + error.message);
-            } finally {
+                clearInterval(progressInterval);
                 loadingIndicator.classList.add('hidden');
+                alert('Error analyzing logs: ' + error.message);
+            }
+        }
+
+        function resetProgress() {
+            document.getElementById('progressBar').style.width = '0%';
+            document.getElementById('progressText').textContent = 'Initializing...';
+            document.getElementById('progressPercentage').textContent = '0%';
+            document.getElementById('fileProgress').textContent = '0 / 0';
+            document.getElementById('currentFile').textContent = '-';
+            document.getElementById('timeRemaining').textContent = 'Calculating...';
+            document.getElementById('elapsedTime').textContent = '0s';
+        }
+
+        function updateProgress(data) {
+            const progressBar = document.getElementById('progressBar');
+            const progressText = document.getElementById('progressText');
+            const progressPercentage = document.getElementById('progressPercentage');
+            const fileProgress = document.getElementById('fileProgress');
+            const currentFile = document.getElementById('currentFile');
+            const timeRemaining = document.getElementById('timeRemaining');
+
+            if (data.progress !== undefined) {
+                const percent = Math.round(data.progress * 100);
+                progressBar.style.width = percent + '%';
+                progressPercentage.textContent = percent + '%';
+            }
+
+            if (data.message) {
+                progressText.textContent = data.message;
+            }
+
+            if (data.current_file_index !== undefined && data.total_files !== undefined) {
+                fileProgress.textContent = `${data.current_file_index} / ${data.total_files}`;
+            }
+
+            if (data.current_file) {
+                currentFile.textContent = data.current_file;
+            }
+
+            if (data.estimated_remaining_seconds !== undefined) {
+                timeRemaining.textContent = formatDuration(data.estimated_remaining_seconds);
+            }
+        }
+
+        function updateElapsedTime() {
+            if (progressStartTime) {
+                const elapsed = Math.floor((Date.now() - progressStartTime) / 1000);
+                document.getElementById('elapsedTime').textContent = formatDuration(elapsed);
             }
         }
 

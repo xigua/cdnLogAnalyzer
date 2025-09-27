@@ -7,15 +7,16 @@ Processes .gz log files and provides interactive visualizations
 import os
 import gzip
 import re
+import time
 from datetime import datetime, timedelta
 from collections import defaultdict, Counter
 from urllib.parse import urlparse
 import json
 from dataclasses import dataclass
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Generator
 import statistics
 
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, render_template, request, jsonify, Response
 
 app = Flask(__name__)
 
@@ -44,6 +45,7 @@ class LogAnalyzer:
             r'(\d+) (\d+) (\d+) (\w+) '
             r'"([^"]*)" "([^"]*)" (\d+\.\d+\.\d+\.\d+)'
         )
+        self.progress_callback = None
 
     def parse_log_line(self, line: str) -> Optional[LogEntry]:
         match = self.log_pattern.match(line.strip())
@@ -68,95 +70,312 @@ class LogAnalyzer:
             original_ip=match.group(12)
         )
 
-    def process_directory(self, directory_path: str) -> Dict[str, Any]:
+    def process_directory(self, directory_path: str, progress_callback=None) -> Dict[str, Any]:
         """Process all .gz files in directory and return analysis results"""
+        self.entries = []
+        self.progress_callback = progress_callback
+
+        gz_files = [f for f in os.listdir(directory_path) if f.endswith('.gz')]
+        gz_files.sort()
+
+        total_files = len(gz_files)
+        start_time = time.time()
+
+        if self.progress_callback:
+            self.progress_callback({
+                'progress': 0.0,
+                'message': f'Found {total_files} .gz files to process',
+                'current_file_index': 0,
+                'total_files': total_files,
+                'current_file': '',
+                'estimated_remaining_seconds': 0
+            })
+
+        for i, filename in enumerate(gz_files):
+            filepath = os.path.join(directory_path, filename)
+
+            if self.progress_callback:
+                self.progress_callback({
+                    'progress': i / total_files,
+                    'message': f'Processing file {i + 1} of {total_files}',
+                    'current_file_index': i + 1,
+                    'total_files': total_files,
+                    'current_file': filename,
+                    'estimated_remaining_seconds': self._calculate_remaining_time(i, total_files, start_time)
+                })
+
+            with gzip.open(filepath, 'rt', encoding='utf-8', errors='ignore') as f:
+                line_count = 0
+                for line in f:
+                    entry = self.parse_log_line(line)
+                    if entry:
+                        self.entries.append(entry)
+                    line_count += 1
+
+                    # Update progress within file every 1000 lines
+                    if line_count % 1000 == 0 and self.progress_callback:
+                        file_progress = i / total_files + (0.5 / total_files)  # Approximate mid-file progress
+                        self.progress_callback({
+                            'progress': file_progress,
+                            'message': f'Processing file {i + 1} of {total_files} ({line_count:,} lines processed)',
+                            'current_file_index': i + 1,
+                            'total_files': total_files,
+                            'current_file': filename,
+                            'estimated_remaining_seconds': self._calculate_remaining_time(i, total_files, start_time)
+                        })
+
+        if self.progress_callback:
+            self.progress_callback({
+                'progress': 1.0,
+                'message': 'Generating analysis results...',
+                'current_file_index': total_files,
+                'total_files': total_files,
+                'current_file': '',
+                'estimated_remaining_seconds': 0
+            })
+
+        return self.generate_analysis()
+
+    def _calculate_remaining_time(self, current_index: int, total_files: int, start_time: float) -> int:
+        """Calculate estimated remaining time based on current progress"""
+        if current_index == 0:
+            return 0
+
+        elapsed_time = time.time() - start_time
+        files_per_second = current_index / elapsed_time
+        remaining_files = total_files - current_index
+
+        if files_per_second > 0:
+            return int(remaining_files / files_per_second)
+        return 0
+
+    def process_directory_with_sse(self, directory_path: str, sse_generator) -> Dict[str, Any]:
+        """Process directory with Server-Sent Events progress updates"""
         self.entries = []
 
         gz_files = [f for f in os.listdir(directory_path) if f.endswith('.gz')]
         gz_files.sort()
 
-        for filename in gz_files:
+        total_files = len(gz_files)
+        start_time = time.time()
+
+        # Send initial progress
+        initial_data = {
+            'progress': 0.0,
+            'message': f'Found {total_files} .gz files to process',
+            'current_file_index': 0,
+            'total_files': total_files,
+            'current_file': '',
+            'estimated_remaining_seconds': 0
+        }
+        sse_generator.send(f"data: {json.dumps(initial_data)}\n\n")
+
+        for i, filename in enumerate(gz_files):
             filepath = os.path.join(directory_path, filename)
+
+            # Send file start progress
+            progress_data = {
+                'progress': i / total_files,
+                'message': f'Processing file {i + 1} of {total_files}',
+                'current_file_index': i + 1,
+                'total_files': total_files,
+                'current_file': filename,
+                'estimated_remaining_seconds': self._calculate_remaining_time(i, total_files, start_time)
+            }
+            sse_generator.send(f"data: {json.dumps(progress_data)}\n\n")
+
             with gzip.open(filepath, 'rt', encoding='utf-8', errors='ignore') as f:
+                line_count = 0
                 for line in f:
                     entry = self.parse_log_line(line)
                     if entry:
                         self.entries.append(entry)
+                    line_count += 1
+
+                    # Send progress every 1000 lines
+                    if line_count % 1000 == 0:
+                        file_progress = i / total_files + (0.5 / total_files)
+                        progress_data = {
+                            'progress': file_progress,
+                            'message': f'Processing file {i + 1} of {total_files} ({line_count:,} lines processed)',
+                            'current_file_index': i + 1,
+                            'total_files': total_files,
+                            'current_file': filename,
+                            'estimated_remaining_seconds': self._calculate_remaining_time(i, total_files, start_time)
+                        }
+                        sse_generator.send(f"data: {json.dumps(progress_data)}\n\n")
+
+        # Send final progress before analysis
+        final_progress = {
+            'progress': 1.0,
+            'message': 'Generating analysis results...',
+            'current_file_index': total_files,
+            'total_files': total_files,
+            'current_file': '',
+            'estimated_remaining_seconds': 0
+        }
+        sse_generator.send(f"data: {json.dumps(final_progress)}\n\n")
 
         return self.generate_analysis()
 
-    def generate_analysis(self) -> Dict[str, Any]:
-        """Generate comprehensive analysis of log entries"""
+    def generate_analysis(self, progress_callback=None) -> Dict[str, Any]:
+        """Generate comprehensive analysis of log entries with progress tracking"""
         if not self.entries:
             return {}
 
-        # Basic statistics
+        analysis_steps = [
+            ("Computing basic statistics", self._compute_basic_stats),
+            ("Analyzing traffic by IP", self.analyze_traffic_by_ip),
+            ("Analyzing traffic by URL", self.analyze_traffic_by_url),
+            ("Analyzing hourly traffic patterns", self.analyze_hourly_traffic),
+            ("Analyzing user behavior", self.analyze_user_behavior),
+            ("Detecting suspicious patterns", self.detect_suspicious_patterns),
+            ("Computing performance statistics", self.analyze_performance)
+        ]
+
+        results = {}
+        total_steps = len(analysis_steps)
+
+        for i, (step_name, step_func) in enumerate(analysis_steps):
+            if progress_callback:
+                progress_callback({
+                    'progress': 1.0 + (i / total_steps) * 0.2,  # Analysis is 20% of total progress after file processing
+                    'message': step_name,
+                    'current_file_index': None,
+                    'total_files': None,
+                    'current_file': '',
+                    'estimated_remaining_seconds': max(0, (total_steps - i) * 2)  # Estimate 2 seconds per step
+                })
+
+            if step_name == "Computing basic statistics":
+                basic_stats = step_func()
+                results['basic_stats'] = basic_stats
+            elif step_name == "Analyzing traffic by IP":
+                results['traffic_by_ip'] = step_func()
+            elif step_name == "Analyzing traffic by URL":
+                results['traffic_by_url'] = step_func()
+            elif step_name == "Analyzing hourly traffic patterns":
+                results['hourly_traffic'] = step_func()
+            elif step_name == "Analyzing user behavior":
+                results['user_behavior'] = step_func()
+            elif step_name == "Detecting suspicious patterns":
+                results['suspicious_patterns'] = step_func()
+            elif step_name == "Computing performance statistics":
+                results['performance_stats'] = step_func()
+
+        return results
+
+    def generate_analysis_with_progress(self, progress_callback):
+        """Generator that yields progress updates and final results"""
+        if not self.entries:
+            yield {}
+            return
+
+        analysis_steps = [
+            ("Computing basic statistics", self._compute_basic_stats),
+            ("Analyzing traffic by IP", self.analyze_traffic_by_ip),
+            ("Analyzing traffic by URL", self.analyze_traffic_by_url),
+            ("Analyzing hourly traffic patterns", self.analyze_hourly_traffic),
+            ("Analyzing user behavior", self.analyze_user_behavior),
+            ("Detecting suspicious patterns", self.detect_suspicious_patterns),
+            ("Computing performance statistics", self.analyze_performance)
+        ]
+
+        results = {}
+        total_steps = len(analysis_steps)
+
+        for i, (step_name, step_func) in enumerate(analysis_steps):
+            # Send progress update
+            progress_data = {
+                'progress': 1.0 + (i / total_steps) * 0.15,  # Analysis phase is 15% after file processing
+                'message': step_name,
+                'current_file_index': None,
+                'total_files': None,
+                'current_file': '',
+                'estimated_remaining_seconds': max(0, (total_steps - i) * 1)
+            }
+            yield progress_callback(progress_data)
+
+            # Execute the analysis step
+            if step_name == "Computing basic statistics":
+                basic_stats = step_func()
+                results['basic_stats'] = basic_stats
+            elif step_name == "Analyzing traffic by IP":
+                results['traffic_by_ip'] = step_func()
+            elif step_name == "Analyzing traffic by URL":
+                results['traffic_by_url'] = step_func()
+            elif step_name == "Analyzing hourly traffic patterns":
+                results['hourly_traffic'] = step_func()
+            elif step_name == "Analyzing user behavior":
+                results['user_behavior'] = step_func()
+            elif step_name == "Detecting suspicious patterns":
+                results['suspicious_patterns'] = step_func()
+            elif step_name == "Computing performance statistics":
+                results['performance_stats'] = step_func()
+
+        yield results
+
+    def _compute_basic_stats(self) -> Dict[str, Any]:
+        """Compute basic statistics efficiently"""
         total_requests = len(self.entries)
-        unique_ips = len(set(entry.ip for entry in self.entries))
 
-        # Traffic analysis
-        traffic_by_ip = self.analyze_traffic_by_ip()
-        traffic_by_url = self.analyze_traffic_by_url()
-        hourly_traffic = self.analyze_hourly_traffic()
+        # Use set comprehension for unique IPs (more efficient than generator)
+        unique_ips = len({entry.ip for entry in self.entries})
 
-        # Behavioral patterns
-        user_behavior = self.analyze_user_behavior()
-        suspicious_patterns = self.detect_suspicious_patterns()
-
-        # Performance analysis
-        performance_stats = self.analyze_performance()
+        # Get time range efficiently
+        timestamps = [entry.timestamp for entry in self.entries]
 
         return {
-            'basic_stats': {
-                'total_requests': total_requests,
-                'unique_ips': unique_ips,
-                'time_range': {
-                    'start': min(entry.timestamp for entry in self.entries).isoformat(),
-                    'end': max(entry.timestamp for entry in self.entries).isoformat()
-                }
-            },
-            'traffic_by_ip': traffic_by_ip,
-            'traffic_by_url': traffic_by_url,
-            'hourly_traffic': hourly_traffic,
-            'user_behavior': user_behavior,
-            'suspicious_patterns': suspicious_patterns,
-            'performance_stats': performance_stats
+            'total_requests': total_requests,
+            'unique_ips': unique_ips,
+            'time_range': {
+                'start': min(timestamps).isoformat(),
+                'end': max(timestamps).isoformat()
+            }
         }
 
     def analyze_traffic_by_ip(self) -> List[Dict]:
-        """Analyze traffic consumption by IP address"""
-        ip_stats = defaultdict(lambda: {
-            'requests': 0,
-            'bytes_sent': 0,
-            'unique_urls': set(),
-            'user_agents': set(),
-            'first_seen': None,
-            'last_seen': None
-        })
+        """Analyze traffic consumption by IP address - optimized version"""
+        ip_stats = {}
 
         for entry in self.entries:
-            stats = ip_stats[entry.ip]
+            ip = entry.ip
+            if ip not in ip_stats:
+                ip_stats[ip] = {
+                    'requests': 0,
+                    'bytes_sent': 0,
+                    'unique_urls': set(),
+                    'user_agents': set(),
+                    'timestamps': []
+                }
+
+            stats = ip_stats[ip]
             stats['requests'] += 1
             stats['bytes_sent'] += entry.bytes_sent
             stats['unique_urls'].add(entry.url)
             stats['user_agents'].add(entry.user_agent)
+            stats['timestamps'].append(entry.timestamp)
 
-            if stats['first_seen'] is None or entry.timestamp < stats['first_seen']:
-                stats['first_seen'] = entry.timestamp
-            if stats['last_seen'] is None or entry.timestamp > stats['last_seen']:
-                stats['last_seen'] = entry.timestamp
-
-        # Convert to list and sort by bytes sent
+        # Convert to list and calculate derived metrics
         result = []
         for ip, stats in ip_stats.items():
+            timestamps = stats['timestamps']
+            if len(timestamps) > 1:
+                duration_seconds = (max(timestamps) - min(timestamps)).total_seconds()
+                duration_minutes = duration_seconds / 60
+                requests_per_minute = stats['requests'] / max(1, duration_minutes)
+            else:
+                duration_minutes = 0
+                requests_per_minute = 0
+
             result.append({
                 'ip': ip,
                 'requests': stats['requests'],
                 'bytes_sent': stats['bytes_sent'],
                 'unique_urls': len(stats['unique_urls']),
                 'unique_user_agents': len(stats['user_agents']),
-                'duration_minutes': (stats['last_seen'] - stats['first_seen']).total_seconds() / 60,
-                'requests_per_minute': stats['requests'] / max(1, (stats['last_seen'] - stats['first_seen']).total_seconds() / 60)
+                'duration_minutes': duration_minutes,
+                'requests_per_minute': requests_per_minute
             })
 
         return sorted(result, key=lambda x: x['bytes_sent'], reverse=True)[:50]
@@ -262,67 +481,62 @@ class LogAnalyzer:
         }
 
     def detect_suspicious_patterns(self) -> Dict[str, Any]:
-        """Detect suspicious or unusual patterns"""
+        """Detect suspicious or unusual patterns - optimized version"""
+        # Group entries by IP first (single pass)
+        ip_entries = {}
+        for entry in self.entries:
+            if entry.ip not in ip_entries:
+                ip_entries[entry.ip] = []
+            ip_entries[entry.ip].append(entry)
+
         suspicious_ips = []
         high_frequency_ips = []
 
-        # Analyze request patterns by IP
-        ip_patterns = defaultdict(lambda: {
-            'requests': 0,
-            'timespan_minutes': 0,
-            'unique_urls': set(),
-            'status_codes': [],
-            'regular_intervals': []
-        })
+        for ip, entries in ip_entries.items():
+            num_requests = len(entries)
 
-        for entry in self.entries:
-            pattern = ip_patterns[entry.ip]
-            pattern['requests'] += 1
-            pattern['unique_urls'].add(entry.url)
-            pattern['status_codes'].append(entry.status_code)
+            # Skip IPs with very few requests to save processing time
+            if num_requests < 5:
+                continue
 
-        # Calculate time patterns
-        for ip in ip_patterns:
-            ip_entries = [e for e in self.entries if e.ip == ip]
-            if len(ip_entries) > 1:
-                ip_entries.sort(key=lambda x: x.timestamp)
-                timespan = (ip_entries[-1].timestamp - ip_entries[0].timestamp).total_seconds() / 60
-                ip_patterns[ip]['timespan_minutes'] = timespan
+            # Sort entries by timestamp for this IP
+            entries.sort(key=lambda x: x.timestamp)
 
-                # Check for regular intervals (potential bot behavior)
+            # Calculate timespan
+            timespan_seconds = (entries[-1].timestamp - entries[0].timestamp).total_seconds()
+            timespan_minutes = timespan_seconds / 60 if timespan_seconds > 0 else 1
+
+            requests_per_minute = num_requests / timespan_minutes
+            unique_urls = len({e.url for e in entries})
+
+            # High frequency detection
+            if requests_per_minute > 10:
+                high_frequency_ips.append({
+                    'ip': ip,
+                    'requests': num_requests,
+                    'requests_per_minute': requests_per_minute,
+                    'unique_urls': unique_urls
+                })
+
+            # Bot behavior detection (only for high-request IPs to save time)
+            if num_requests > 20:
                 intervals = []
-                for i in range(1, len(ip_entries)):
-                    interval = (ip_entries[i].timestamp - ip_entries[i-1].timestamp).total_seconds()
+                for i in range(1, len(entries)):
+                    interval = (entries[i].timestamp - entries[i-1].timestamp).total_seconds()
                     intervals.append(interval)
 
                 if intervals:
                     avg_interval = statistics.mean(intervals)
                     interval_variance = statistics.variance(intervals) if len(intervals) > 1 else 0
-                    ip_patterns[ip]['avg_interval'] = avg_interval
-                    ip_patterns[ip]['interval_variance'] = interval_variance
 
-        # Identify suspicious patterns
-        for ip, pattern in ip_patterns.items():
-            requests_per_minute = pattern['requests'] / max(1, pattern['timespan_minutes'])
-
-            # High frequency requests
-            if requests_per_minute > 10:
-                high_frequency_ips.append({
-                    'ip': ip,
-                    'requests': pattern['requests'],
-                    'requests_per_minute': requests_per_minute,
-                    'unique_urls': len(pattern['unique_urls'])
-                })
-
-            # Regular interval requests (potential bot)
-            if ('avg_interval' in pattern and pattern['avg_interval'] < 60 and
-                pattern['interval_variance'] < 100 and pattern['requests'] > 20):
-                suspicious_ips.append({
-                    'ip': ip,
-                    'requests': pattern['requests'],
-                    'avg_interval_seconds': pattern['avg_interval'],
-                    'reason': 'Regular interval requests (potential bot)'
-                })
+                    # Regular interval requests (potential bot)
+                    if avg_interval < 60 and interval_variance < 100:
+                        suspicious_ips.append({
+                            'ip': ip,
+                            'requests': num_requests,
+                            'avg_interval_seconds': avg_interval,
+                            'reason': 'Regular interval requests (potential bot)'
+                        })
 
         return {
             'suspicious_ips': suspicious_ips[:20],
@@ -362,6 +576,132 @@ def analyze_logs():
         return jsonify(results)
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+@app.route('/api/analyze/progress')
+def analyze_logs_with_progress():
+    directory_path = request.args.get('directory_path')
+
+    if not directory_path or not os.path.exists(directory_path):
+        return Response(
+            f"data: {json.dumps({'status': 'error', 'message': 'Invalid directory path'})}\n\n",
+            mimetype='text/event-stream'
+        )
+
+    def generate():
+        # Send initial message
+        yield f"data: {json.dumps({'status': 'started', 'message': 'Starting analysis...'})}\n\n"
+
+        try:
+            # Create analyzer instance for this request
+            analyzer_instance = LogAnalyzer()
+
+            # Define progress callback that yields progress updates
+            def progress_callback(data):
+                return f"data: {json.dumps(data)}\n\n"
+
+            # Process directory with real-time progress updates
+            gz_files = [f for f in os.listdir(directory_path) if f.endswith('.gz')]
+            gz_files.sort()
+            total_files = len(gz_files)
+            start_time = time.time()
+            analyzer_instance.entries = []
+
+            # Send initial progress
+            initial_data = {
+                'progress': 0.0,
+                'message': f'Found {total_files} .gz files to process',
+                'current_file_index': 0,
+                'total_files': total_files,
+                'current_file': '',
+                'estimated_remaining_seconds': 0
+            }
+            yield progress_callback(initial_data)
+
+            for i, filename in enumerate(gz_files):
+                filepath = os.path.join(directory_path, filename)
+
+                # Send file start progress
+                progress_data = {
+                    'progress': i / total_files if total_files > 0 else 0,
+                    'message': f'Processing file {i + 1} of {total_files}',
+                    'current_file_index': i + 1,
+                    'total_files': total_files,
+                    'current_file': filename,
+                    'estimated_remaining_seconds': analyzer_instance._calculate_remaining_time(i, total_files, start_time)
+                }
+                yield progress_callback(progress_data)
+
+                with gzip.open(filepath, 'rt', encoding='utf-8', errors='ignore') as f:
+                    line_count = 0
+                    for line in f:
+                        entry = analyzer_instance.parse_log_line(line)
+                        if entry:
+                            analyzer_instance.entries.append(entry)
+                        line_count += 1
+
+                        # Send progress every 1000 lines
+                        if line_count % 1000 == 0:
+                            file_progress = (i + 0.5) / total_files if total_files > 0 else 0.5
+                            progress_data = {
+                                'progress': file_progress,
+                                'message': f'Processing file {i + 1} of {total_files} ({line_count:,} lines processed)',
+                                'current_file_index': i + 1,
+                                'total_files': total_files,
+                                'current_file': filename,
+                                'estimated_remaining_seconds': analyzer_instance._calculate_remaining_time(i, total_files, start_time)
+                            }
+                            yield progress_callback(progress_data)
+
+            # Send analysis phase progress
+            analysis_data = {
+                'progress': 1.0,
+                'message': 'Generating analysis results...',
+                'current_file_index': total_files,
+                'total_files': total_files,
+                'current_file': '',
+                'estimated_remaining_seconds': 0
+            }
+            yield progress_callback(analysis_data)
+
+            # Generate final results with progress tracking
+            def analysis_progress_callback(data):
+                return progress_callback(data)
+
+            # Collect progress updates from analysis
+            analysis_generator = analyzer_instance.generate_analysis_with_progress(analysis_progress_callback)
+            results = None
+            for item in analysis_generator:
+                if isinstance(item, str):  # Progress update
+                    yield item
+                else:  # Final results
+                    results = item
+
+            # Send completion message
+            completion_data = {
+                'status': 'completed',
+                'progress': 1.0,
+                'message': 'Analysis complete!',
+                'results': results
+            }
+            yield f"data: {json.dumps(completion_data)}\n\n"
+
+        except Exception as e:
+            error_data = {
+                'status': 'error',
+                'message': f'Error: {str(e)}'
+            }
+            yield f"data: {json.dumps(error_data)}\n\n"
+
+    return Response(
+        generate(),
+        mimetype='text/event-stream',
+        headers={
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive',
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Headers': 'Content-Type'
+        }
+    )
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=8080)
