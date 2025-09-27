@@ -840,8 +840,13 @@
                     button.disabled = false;
                 }, 2000);
 
-                // Show success alert with count
-                alert(`✅ Copied ${staticIPs.length} static-only IP addresses to clipboard!\n\nThese IPs only access static files and never make API calls.`);
+                // Show success alert with count and optimization info
+                const originalCount = data.original_count || staticIPs.length;
+                const optimizationMessage = originalCount > staticIPs.length
+                    ? `\n\n🎯 Optimization: ${originalCount} individual IPs optimized to ${staticIPs.length} entries (C-class subnets with 4+ IPs converted to /24 CIDR blocks)`
+                    : '';
+
+                alert(`✅ Copied ${staticIPs.length} blacklist entries to clipboard!${optimizationMessage}\n\nThese IP addresses/ranges only access static files and never make API calls.`);
 
             } catch (error) {
                 // Handle errors

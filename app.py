@@ -1067,12 +1067,42 @@ def get_static_only_ips():
             if behavior['dynamic_requests'] == 0
         ]
 
-        # Sort IPs numerically
-        static_only_ips.sort(key=lambda ip: tuple(int(part) for part in ip.split('.')))
+        # Group IPs by C-class subnet (first 3 octets)
+        subnet_groups = {}
+        for ip in static_only_ips:
+            parts = ip.split('.')
+            if len(parts) == 4:
+                subnet = f"{parts[0]}.{parts[1]}.{parts[2]}"
+                if subnet not in subnet_groups:
+                    subnet_groups[subnet] = []
+                subnet_groups[subnet].append(ip)
+
+        # Convert to blacklist format
+        blacklist_entries = []
+        for subnet, ips in subnet_groups.items():
+            if len(ips) >= 2:
+                # Use CIDR notation for 4+ IPs in same C-class
+                blacklist_entries.append(f"{subnet}.0/24")
+            else:
+                # Add individual IPs
+                blacklist_entries.extend(ips)
+
+        # Sort entries (CIDR blocks first, then individual IPs)
+        def sort_key(entry):
+            if '/24' in entry:
+                # CIDR block - sort by network address
+                network = entry.replace('.0/24', '')
+                return (0, tuple(int(part) for part in network.split('.')))
+            else:
+                # Individual IP
+                return (1, tuple(int(part) for part in entry.split('.')))
+
+        blacklist_entries.sort(key=sort_key)
 
         return jsonify({
-            'static_only_ips': static_only_ips,
-            'count': len(static_only_ips)
+            'static_only_ips': blacklist_entries,
+            'count': len(blacklist_entries),
+            'original_count': len(static_only_ips)
         })
 
     except Exception as e:
