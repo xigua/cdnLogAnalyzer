@@ -1032,5 +1032,51 @@ def get_ip_geolocation():
     except Exception as e:
         return jsonify({'error': f'Failed to get geolocation: {str(e)}'}), 500
 
+@app.route('/api/static-only-ips', methods=['GET'])
+def get_static_only_ips():
+    """Get all static-only IP addresses for blacklisting"""
+    try:
+        global global_log_entries
+
+        if not global_log_entries:
+            return jsonify({'error': 'No log data available. Please run analysis first.'}), 400
+
+        # Group entries by IP
+        ip_behaviors = {}
+        for entry in global_log_entries:
+            ip = entry.ip
+            if ip not in ip_behaviors:
+                ip_behaviors[ip] = {'dynamic_requests': 0, 'static_requests': 0}
+
+            # Check for dynamic content (same logic as main analysis)
+            is_dynamic = (
+                entry.url.startswith('/api/') or
+                '/login' in entry.url or
+                '/weixin' in entry.url or
+                entry.url == '/'
+            )
+
+            if is_dynamic:
+                ip_behaviors[ip]['dynamic_requests'] += 1
+            else:
+                ip_behaviors[ip]['static_requests'] += 1
+
+        # Get only static-only IPs
+        static_only_ips = [
+            ip for ip, behavior in ip_behaviors.items()
+            if behavior['dynamic_requests'] == 0
+        ]
+
+        # Sort IPs numerically
+        static_only_ips.sort(key=lambda ip: tuple(int(part) for part in ip.split('.')))
+
+        return jsonify({
+            'static_only_ips': static_only_ips,
+            'count': len(static_only_ips)
+        })
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=8080)

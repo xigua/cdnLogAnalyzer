@@ -194,7 +194,13 @@
 
                 <!-- Top Static-Only IPs -->
                 <div>
-                    <h4 class="text-lg font-medium mb-3 text-red-700">Top Static-Only IPs (Suspicious)</h4>
+                    <div class="flex justify-between items-center mb-3">
+                        <h4 class="text-lg font-medium text-red-700">Top Static-Only IPs (Suspicious)</h4>
+                        <button onclick="copyStaticIPsToClipboard()"
+                                class="px-4 py-2 bg-red-600 text-white text-sm rounded-lg hover:bg-red-700 focus:ring-2 focus:ring-red-500 focus:ring-offset-2">
+                            📋 Copy IPs to Blacklist
+                        </button>
+                    </div>
                     <div class="overflow-x-auto">
                         <table class="min-w-full divide-y divide-gray-200">
                             <thead class="bg-gray-50">
@@ -675,6 +681,9 @@
         function displayStaticVsDynamicAnalysis(data) {
             if (!data) return;
 
+            // Store all static-only IPs for blacklisting (not just top ones)
+            staticOnlyIPList = data.static_only_ips.top_ips || [];
+
             // Update summary cards
             document.getElementById('staticOnlyCount').textContent = data.static_only_ips.count.toLocaleString();
             document.getElementById('staticOnlyPercentage').textContent = data.static_only_ips.percentage.toFixed(1);
@@ -783,6 +792,92 @@
 
                 // Small delay to avoid rate limiting
                 await new Promise(resolve => setTimeout(resolve, 200));
+            }
+        }
+
+        // Global variable to store static-only IPs for blacklisting
+        let staticOnlyIPList = [];
+
+        async function copyStaticIPsToClipboard() {
+            const button = event.target;
+            const originalText = button.innerHTML;
+
+            try {
+                // Show loading state
+                button.innerHTML = '⏳ Loading...';
+                button.disabled = true;
+
+                // Fetch all static-only IPs from the server
+                const response = await fetch('/api/static-only-ips');
+                const data = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(data.error || 'Failed to fetch static-only IPs');
+                }
+
+                const staticIPs = data.static_only_ips;
+
+                if (!staticIPs || staticIPs.length === 0) {
+                    alert('No static-only IPs found. All IPs are accessing dynamic content.');
+                    return;
+                }
+
+                // IPs are already sorted by the server
+                const ipListText = staticIPs.join('\n');
+
+                // Copy to clipboard
+                await navigator.clipboard.writeText(ipListText);
+
+                // Show success message
+                button.innerHTML = '✅ Copied!';
+                button.classList.remove('bg-red-600', 'hover:bg-red-700');
+                button.classList.add('bg-green-600', 'hover:bg-green-700');
+
+                setTimeout(() => {
+                    button.innerHTML = originalText;
+                    button.classList.remove('bg-green-600', 'hover:bg-green-700');
+                    button.classList.add('bg-red-600', 'hover:bg-red-700');
+                    button.disabled = false;
+                }, 2000);
+
+                // Show success alert with count
+                alert(`✅ Copied ${staticIPs.length} static-only IP addresses to clipboard!\n\nThese IPs only access static files and never make API calls.`);
+
+            } catch (error) {
+                // Handle errors
+                button.innerHTML = originalText;
+                button.disabled = false;
+
+                // Fallback: try to use the displayed IPs if API fails
+                if (staticOnlyIPList && staticOnlyIPList.length > 0) {
+                    const uniqueIPs = [...new Set(staticOnlyIPList.map(item => item.ip))];
+                    uniqueIPs.sort((a, b) => {
+                        const aParts = a.split('.').map(num => parseInt(num, 10));
+                        const bParts = b.split('.').map(num => parseInt(num, 10));
+                        for (let i = 0; i < 4; i++) {
+                            if (aParts[i] !== bParts[i]) return aParts[i] - bParts[i];
+                        }
+                        return 0;
+                    });
+
+                    const ipListText = uniqueIPs.join('\n');
+
+                    // Try clipboard API, fallback to textarea
+                    try {
+                        await navigator.clipboard.writeText(ipListText);
+                        alert(`⚠️ Used displayed IPs only. Copied ${uniqueIPs.length} IP addresses to clipboard.`);
+                    } catch {
+                        const textArea = document.createElement('textarea');
+                        textArea.value = ipListText;
+                        document.body.appendChild(textArea);
+                        textArea.select();
+                        document.execCommand('copy');
+                        document.body.removeChild(textArea);
+                        alert(`⚠️ Used displayed IPs only. Copied ${uniqueIPs.length} IP addresses to clipboard.`);
+                    }
+                } else {
+                    alert('❌ Error: ' + error.message);
+                }
             }
         }
 
