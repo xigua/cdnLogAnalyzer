@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CDN Log Analyzer</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/date-fns@2.29.3/index.min.js"></script>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <style>
+        .chart-container { position: relative; height: 400px; margin: 20px 0; }
+        .metric-card { transition: transform 0.2s; }
+        .metric-card:hover { transform: translateY(-2px); }
+        .suspicious-item { border-left: 4px solid #f59e0b; }
+        .high-traffic-item { border-left: 4px solid #ef4444; }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen">
+    <div class="container mx-auto px-4 py-8">
+        <h1 class="text-4xl font-bold text-center mb-8 text-gray-800">CDN Log Analyzer</h1>
+
+        <!-- Directory Selection -->
+        <div class="bg-white rounded-lg shadow-lg p-6 mb-8">
+            <h2 class="text-2xl font-semibold mb-4">Select Log Directory</h2>
+            <div class="flex gap-4">
+                <input type="text" id="directoryPath"
+                       placeholder="Enter directory path (e.g., /path/to/logs)"
+                       class="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+                <button onclick="analyzeDirectory()"
+                        class="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 focus:ring-2 focus:ring-blue-500 focus:ring-offset-2">
+                    Analyze Logs
+                </button>
+            </div>
+            <div id="loadingIndicator" class="hidden mt-4 text-center">
+                <div class="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+                <span class="ml-2 text-gray-600">Processing log files...</span>
+            </div>
+        </div>
+
+        <!-- Results Container -->
+        <div id="resultsContainer" class="hidden">
+            <!-- Basic Statistics -->
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
+                <div class="metric-card bg-white rounded-lg shadow-lg p-6">
+                    <div class="flex items-center">
+                        <div class="text-3xl font-bold text-blue-600" id="totalRequests">-</div>
+                        <div class="ml-2 text-sm text-gray-600">Total Requests</div>
+                    </div>
+                </div>
+                <div class="metric-card bg-white rounded-lg shadow-lg p-6">
+                    <div class="flex items-center">
+                        <div class="text-3xl font-bold text-green-600" id="uniqueIPs">-</div>
+                        <div class="ml-2 text-sm text-gray-600">Unique IPs</div>
+                    </div>
+                </div>
+                <div class="metric-card bg-white rounded-lg shadow-lg p-6">
+                    <div class="flex items-center">
+                        <div class="text-3xl font-bold text-purple-600" id="bounceRate">-</div>
+                        <div class="ml-2 text-sm text-gray-600">Bounce Rate %</div>
+                    </div>
+                </div>
+                <div class="metric-card bg-white rounded-lg shadow-lg p-6">
+                    <div class="flex items-center">
+                        <div class="text-3xl font-bold text-orange-600" id="avgResponseTime">-</div>
+                        <div class="ml-2 text-sm text-gray-600">Avg Response (ms)</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Charts Row -->
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8">
+                <!-- Hourly Traffic Chart -->
+                <div class="bg-white rounded-lg shadow-lg p-6">
+                    <h3 class="text-xl font-semibold mb-4">Hourly Traffic Pattern</h3>
+                    <div class="chart-container">
+                        <canvas id="hourlyTrafficChart"></canvas>
+                    </div>
+                </div>
+
+                <!-- Cache Performance Chart -->
+                <div class="bg-white rounded-lg shadow-lg p-6">
+                    <h3 class="text-xl font-semibold mb-4">Cache Hit Ratio & Status Codes</h3>
+                    <div class="chart-container">
+                        <canvas id="cachePerformanceChart"></canvas>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Top Traffic Tables -->
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8">
+                <!-- Top IPs by Traffic -->
+                <div class="bg-white rounded-lg shadow-lg p-6">
+                    <h3 class="text-xl font-semibold mb-4">Top IPs by Traffic</h3>
+                    <div class="overflow-x-auto">
+                        <table class="min-w-full divide-y divide-gray-200">
+                            <thead class="bg-gray-50">
+                                <tr>
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">IP</th>
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Requests</th>
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Traffic (MB)</th>
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Req/Min</th>
+                                </tr>
+                            </thead>
+                            <tbody id="topIPsTable" class="bg-white divide-y divide-gray-200">
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Top URLs by Traffic -->
+                <div class="bg-white rounded-lg shadow-lg p-6">
+                    <h3 class="text-xl font-semibold mb-4">Top URLs by Traffic</h3>
+                    <div class="overflow-x-auto">
+                        <table class="min-w-full divide-y divide-gray-200">
+                            <thead class="bg-gray-50">
+                                <tr>
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Path</th>
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Requests</th>
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Traffic (MB)</th>
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Unique IPs</th>
+                                </tr>
+                            </thead>
+                            <tbody id="topURLsTable" class="bg-white divide-y divide-gray-200">
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Suspicious Activity Section -->
+            <div class="bg-white rounded-lg shadow-lg p-6 mb-8">
+                <h3 class="text-xl font-semibold mb-4">Suspicious Activity & Patterns</h3>
+
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    <!-- High Frequency IPs -->
+                    <div>
+                        <h4 class="text-lg font-medium mb-3 text-red-700">High Frequency IPs (>10 req/min)</h4>
+                        <div id="highFrequencyIPs" class="space-y-2">
+                        </div>
+                    </div>
+
+                    <!-- Bot-like Behavior -->
+                    <div>
+                        <h4 class="text-lg font-medium mb-3 text-yellow-700">Potential Bot Activity</h4>
+                        <div id="suspiciousIPs" class="space-y-2">
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- User Behavior Analysis -->
+            <div class="bg-white rounded-lg shadow-lg p-6">
+                <h3 class="text-xl font-semibold mb-4">User Behavior Insights</h3>
+
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <div class="text-center">
+                        <div class="text-2xl font-bold text-blue-600" id="totalSessions">-</div>
+                        <div class="text-sm text-gray-600">Total Sessions</div>
+                    </div>
+                    <div class="text-center">
+                        <div class="text-2xl font-bold text-purple-600" id="singleRequestSessions">-</div>
+                        <div class="text-sm text-gray-600">Single-Page Sessions</div>
+                    </div>
+                    <div class="text-center">
+                        <div class="text-2xl font-bold text-green-600" id="avgSessionDuration">-</div>
+                        <div class="text-sm text-gray-600">Avg Session Duration</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let analysisData = null;
+
+        async function analyzeDirectory() {
+            const directoryPath = document.getElementById('directoryPath').value;
+            if (!directoryPath) {
+                alert('Please enter a directory path');
+                return;
+            }
+
+            const loadingIndicator = document.getElementById('loadingIndicator');
+            const resultsContainer = document.getElementById('resultsContainer');
+
+            loadingIndicator.classList.remove('hidden');
+            resultsContainer.classList.add('hidden');
+
+            try {
+                const response = await fetch('/api/analyze', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ directory_path: directoryPath })
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    analysisData = data;
+                    displayResults(data);
+                    resultsContainer.classList.remove('hidden');
+                } else {
+                    alert('Error: ' + data.error);
+                }
+            } catch (error) {
+                alert('Error analyzing logs: ' + error.message);
+            } finally {
+                loadingIndicator.classList.add('hidden');
+            }
+        }
+
+        function displayResults(data) {
+            // Update basic statistics
+            document.getElementById('totalRequests').textContent = data.basic_stats.total_requests.toLocaleString();
+            document.getElementById('uniqueIPs').textContent = data.basic_stats.unique_ips.toLocaleString();
+            document.getElementById('bounceRate').textContent = data.user_behavior.bounce_rate.toFixed(1) + '%';
+            document.getElementById('avgResponseTime').textContent = Math.round(data.performance_stats.avg_response_time);
+
+            // Update user behavior metrics
+            document.getElementById('totalSessions').textContent = data.user_behavior.total_sessions.toLocaleString();
+            document.getElementById('singleRequestSessions').textContent = data.user_behavior.single_request_sessions.toLocaleString();
+            document.getElementById('avgSessionDuration').textContent = formatDuration(data.user_behavior.avg_session_duration_seconds);
+
+            // Create charts
+            createHourlyTrafficChart(data.hourly_traffic.hourly_data);
+            createCachePerformanceChart(data.performance_stats);
+
+            // Populate tables
+            populateTopIPsTable(data.traffic_by_ip);
+            populateTopURLsTable(data.traffic_by_url);
+
+            // Display suspicious activity
+            displaySuspiciousActivity(data.suspicious_patterns);
+        }
+
+        function createHourlyTrafficChart(hourlyData) {
+            const ctx = document.getElementById('hourlyTrafficChart').getContext('2d');
+            new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: hourlyData.map(d => d.hour + ':00'),
+                    datasets: [{
+                        label: 'Requests',
+                        data: hourlyData.map(d => d.requests),
+                        borderColor: 'rgb(59, 130, 246)',
+                        backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                        tension: 0.4,
+                        yAxisID: 'y'
+                    }, {
+                        label: 'Unique IPs',
+                        data: hourlyData.map(d => d.unique_ips),
+                        borderColor: 'rgb(16, 185, 129)',
+                        backgroundColor: 'rgba(16, 185, 129, 0.1)',
+                        tension: 0.4,
+                        yAxisID: 'y1'
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        y: { type: 'linear', display: true, position: 'left' },
+                        y1: { type: 'linear', display: true, position: 'right', grid: { drawOnChartArea: false } }
+                    }
+                }
+            });
+        }
+
+        function createCachePerformanceChart(performanceStats) {
+            const ctx = document.getElementById('cachePerformanceChart').getContext('2d');
+            new Chart(ctx, {
+                type: 'doughnut',
+                data: {
+                    labels: Object.keys(performanceStats.cache_status_distribution),
+                    datasets: [{
+                        data: Object.values(performanceStats.cache_status_distribution),
+                        backgroundColor: ['#10b981', '#f59e0b', '#ef4444', '#8b5cf6']
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { position: 'bottom' },
+                        title: { display: true, text: `Cache Hit Ratio: ${performanceStats.cache_hit_ratio.toFixed(1)}%` }
+                    }
+                }
+            });
+        }
+
+        function populateTopIPsTable(trafficData) {
+            const tbody = document.getElementById('topIPsTable');
+            tbody.innerHTML = trafficData.slice(0, 10).map(item => `
+                <tr>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm font-mono text-gray-900">${item.ip}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">${item.requests.toLocaleString()}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">${(item.bytes_sent / 1024 / 1024).toFixed(2)}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">${item.requests_per_minute.toFixed(2)}</td>
+                </tr>
+            `).join('');
+        }
+
+        function populateTopURLsTable(urlData) {
+            const tbody = document.getElementById('topURLsTable');
+            tbody.innerHTML = urlData.slice(0, 10).map(item => `
+                <tr>
+                    <td class="px-6 py-4 text-sm text-gray-900" title="${item.url}">${truncateText(item.path, 40)}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">${item.requests.toLocaleString()}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">${(item.bytes_sent / 1024 / 1024).toFixed(2)}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">${item.unique_ips}</td>
+                </tr>
+            `).join('');
+        }
+
+        function displaySuspiciousActivity(suspiciousPatterns) {
+            // High frequency IPs
+            const highFreqContainer = document.getElementById('highFrequencyIPs');
+            highFreqContainer.innerHTML = suspiciousPatterns.high_frequency_ips.slice(0, 5).map(item => `
+                <div class="high-traffic-item bg-red-50 p-3 rounded-lg">
+                    <div class="font-mono text-sm font-semibold">${item.ip}</div>
+                    <div class="text-xs text-gray-600">${item.requests} requests, ${item.requests_per_minute.toFixed(1)} req/min</div>
+                </div>
+            `).join('') || '<div class="text-gray-500 text-sm">No high-frequency IPs detected</div>';
+
+            // Suspicious IPs
+            const suspiciousContainer = document.getElementById('suspiciousIPs');
+            suspiciousContainer.innerHTML = suspiciousPatterns.suspicious_ips.slice(0, 5).map(item => `
+                <div class="suspicious-item bg-yellow-50 p-3 rounded-lg">
+                    <div class="font-mono text-sm font-semibold">${item.ip}</div>
+                    <div class="text-xs text-gray-600">${item.reason}</div>
+                    <div class="text-xs text-gray-500">${item.requests} requests, ${item.avg_interval_seconds.toFixed(1)}s intervals</div>
+                </div>
+            `).join('') || '<div class="text-gray-500 text-sm">No suspicious patterns detected</div>';
+        }
+
+        function truncateText(text, maxLength) {
+            return text.length > maxLength ? text.substring(0, maxLength) + '...' : text;
+        }
+
+        function formatDuration(seconds) {
+            if (seconds < 60) return Math.round(seconds) + 's';
+            if (seconds < 3600) return Math.round(seconds / 60) + 'm';
+            return Math.round(seconds / 3600) + 'h';
+        }
+
+        // Set default directory path
+        document.getElementById('directoryPath').value = '/Users/xigua/Downloads/zhisai-logs';
+    </script>
+</body>
+</html>
