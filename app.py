@@ -8,12 +8,12 @@ import os
 import gzip
 import re
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from collections import defaultdict, Counter
 from urllib.parse import urlparse
 import json
 from dataclasses import dataclass
-from typing import List, Dict, Any, Optional, Generator
+from typing import List, Dict, Any, Optional
 import statistics
 
 from flask import Flask, render_template, request, jsonify, Response
@@ -285,9 +285,10 @@ class LogAnalyzer:
         total_steps = len(analysis_steps)
 
         for i, (step_name, step_func) in enumerate(analysis_steps):
-            # Send progress update
+            # Send progress update (keep total progress between 0.85 and 1.0 for analysis phase)
+            analysis_progress = 0.85 + (i / total_steps) * 0.15
             progress_data = {
-                'progress': 1.0 + (i / total_steps) * 0.15,  # Analysis phase is 15% after file processing
+                'progress': min(analysis_progress, 1.0),  # Ensure never exceeds 1.0
                 'message': step_name,
                 'current_file_index': None,
                 'total_files': None,
@@ -620,9 +621,10 @@ def analyze_logs_with_progress():
             for i, filename in enumerate(gz_files):
                 filepath = os.path.join(directory_path, filename)
 
-                # Send file start progress
+                # Send file start progress (file processing takes 85% of total progress)
+                file_progress = (i / total_files) * 0.85 if total_files > 0 else 0
                 progress_data = {
-                    'progress': i / total_files if total_files > 0 else 0,
+                    'progress': file_progress,
                     'message': f'Processing file {i + 1} of {total_files}',
                     'current_file_index': i + 1,
                     'total_files': total_files,
@@ -641,9 +643,10 @@ def analyze_logs_with_progress():
 
                         # Send progress every 1000 lines
                         if line_count % 1000 == 0:
-                            file_progress = (i + 0.5) / total_files if total_files > 0 else 0.5
+                            # Mid-file progress: current file + 50% progress within current file
+                            file_progress = ((i + 0.5) / total_files) * 0.85 if total_files > 0 else 0.425
                             progress_data = {
-                                'progress': file_progress,
+                                'progress': min(file_progress, 0.85),  # Cap at 85% for file processing
                                 'message': f'Processing file {i + 1} of {total_files} ({line_count:,} lines processed)',
                                 'current_file_index': i + 1,
                                 'total_files': total_files,
@@ -654,12 +657,12 @@ def analyze_logs_with_progress():
 
             # Send analysis phase progress
             analysis_data = {
-                'progress': 1.0,
+                'progress': 0.85,  # Start analysis phase at 85%
                 'message': 'Generating analysis results...',
                 'current_file_index': total_files,
                 'total_files': total_files,
                 'current_file': '',
-                'estimated_remaining_seconds': 0
+                'estimated_remaining_seconds': 5  # Estimate 5 seconds for analysis
             }
             yield progress_callback(analysis_data)
 
