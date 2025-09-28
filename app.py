@@ -62,8 +62,8 @@ class LogAnalyzer:
             method=match.group(4),
             url=match.group(5),
             status_code=int(match.group(6)),
-            response_size=int(match.group(7)),
-            bytes_sent=int(match.group(8)),
+            response_size=int(match.group(8)),
+            bytes_sent=int(match.group(7)),
             cache_status=match.group(9),
             user_agent=match.group(10),
             content_type=match.group(11),
@@ -607,10 +607,7 @@ class LogAnalyzer:
 
             # More conservative approach - only clear API calls and pages that real users access
             is_dynamic = (
-                entry.url.startswith('/api/') or           # API endpoints
-                '/login' in entry.url or                   # Login related
-                '/weixin' in entry.url or                  # WeChat integration
-                entry.url == '/'                           # Root page only
+                '/api/' in entry.url                     # API endpoints
             )
 
             if is_dynamic:
@@ -1080,7 +1077,7 @@ def get_static_only_ips():
         # Convert to blacklist format
         blacklist_entries = []
         for subnet, ips in subnet_groups.items():
-            if len(ips) >= 2:
+            if len(ips) >= 4:
                 # Use CIDR notation for 4+ IPs in same C-class
                 blacklist_entries.append(f"{subnet}.0/24")
             else:
