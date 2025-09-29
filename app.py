@@ -1029,6 +1029,37 @@ def get_ip_geolocation():
     except Exception as e:
         return jsonify({'error': f'Failed to get geolocation: {str(e)}'}), 500
 
+def is_subnet_safe_to_block(subnet, all_ip_behaviors):
+    """
+    Check if it's safe to block an entire C-class subnet (/24).
+    Safe = NO IP in the subnet (xxx.xxx.xxx.0-255) has accessed dynamic content.
+
+    Args:
+        subnet: String like "192.168.1" (first 3 octets)
+        all_ip_behaviors: Dict of all IP behaviors including dynamic_requests count
+
+    Returns:
+        bool: True if safe to block entire subnet, False otherwise
+    """
+    # Check all IPs in our behavior data for this subnet
+    for ip_str, behavior in all_ip_behaviors.items():
+        # Check if this IP belongs to the subnet
+        ip_parts = ip_str.split('.')
+        if len(ip_parts) == 4:
+            ip_subnet = f"{ip_parts[0]}.{ip_parts[1]}.{ip_parts[2]}"
+
+            if ip_subnet == subnet:
+                # This IP is in our target subnet
+                has_dynamic = behavior.get('dynamic_requests', 0) > 0
+
+                if has_dynamic:
+                    # Found an IP in this subnet that accesses dynamic content
+                    # NOT safe to block entire subnet
+                    return False
+
+    # No IPs in this subnet access dynamic content - safe to block
+    return True
+
 @app.route('/api/static-only-ips', methods=['GET'])
 def get_static_only_ips():
     """Get all static-only IP addresses for blacklisting"""
@@ -1074,12 +1105,19 @@ def get_static_only_ips():
                     subnet_groups[subnet] = []
                 subnet_groups[subnet].append(ip)
 
-        # Convert to blacklist format
+        # Convert to blacklist format with safety checks
         blacklist_entries = []
         for subnet, ips in subnet_groups.items():
             if len(ips) >= 4:
-                # Use CIDR notation for 4+ IPs in same C-class
-                blacklist_entries.append(f"{subnet}.0/24")
+                # Safety check: ensure no IP in this subnet has accessed dynamic content
+                subnet_is_safe = is_subnet_safe_to_block(subnet, ip_behaviors)
+
+                if subnet_is_safe:
+                    # Use CIDR notation for 4+ IPs in same C-class
+                    blacklist_entries.append(f"{subnet}.0/24")
+                else:
+                    # Not safe to block entire subnet, add individual static-only IPs
+                    blacklist_entries.extend(ips)
             else:
                 # Add individual IPs
                 blacklist_entries.extend(ips)
