@@ -608,6 +608,8 @@ class LogAnalyzer:
             # More conservative approach - only clear API calls and pages that real users access
             is_dynamic = (
                 '/api/' in entry.url                     # API endpoints
+                or '/chess/' in entry.url                # Dynamic chess pages
+                or '/homework/' in entry.url             # Dynamic homework pages
             )
 
             if is_dynamic:
