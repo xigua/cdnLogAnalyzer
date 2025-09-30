@@ -970,7 +970,7 @@ def get_ip_details():
                 'url': entry.url,
                 'status_code': entry.status_code,
                 'response_time': entry.response_time,
-                'bytes_sent': entry.bytes_sent,
+                'response_size': entry.response_size,
                 'user_agent': entry.user_agent,
                 'cache_status': entry.cache_status
             }
@@ -981,10 +981,15 @@ def get_ip_details():
         # Sort by timestamp (ascending - oldest first)
         ip_entries.sort(key=lambda x: x['timestamp'])
 
+        # Calculate total traffic in bytes
+        total_traffic_bytes = sum(entry['response_size'] for entry in ip_entries)
+
         return jsonify({
             'ip': ip,
             'requests': ip_entries,
-            'count': len(ip_entries)
+            'count': len(ip_entries),
+            'total_traffic_bytes': total_traffic_bytes,
+            'total_traffic_mb': round(total_traffic_bytes / 1024 / 1024, 2)
         })
 
     except Exception as e:

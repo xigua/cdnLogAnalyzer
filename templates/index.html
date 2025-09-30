@@ -283,7 +283,7 @@
                         <h4 class="text-lg font-medium mb-3">Requests from <span id="selectedIP" class="font-mono text-blue-600"></span></h4>
 
                         <div class="mb-4 text-sm text-gray-600">
-                            <span id="ipRequestCount">0</span> requests found, sorted by time (oldest first)
+                            <span id="ipRequestCount">0</span> requests found, total traffic: <span id="ipTotalTraffic">0 MB</span>, sorted by time (oldest first)
                         </div>
 
                         <div class="overflow-x-auto max-h-96 overflow-y-auto">
@@ -295,7 +295,7 @@
                                         <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">URL</th>
                                         <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
                                         <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Response Time</th>
-                                        <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Bytes Sent</th>
+                                        <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Response Size</th>
                                     </tr>
                                 </thead>
                                 <tbody id="ipRequestsTable" class="bg-white divide-y divide-gray-200">
@@ -627,7 +627,7 @@
                 const data = await response.json();
 
                 if (response.ok) {
-                    displayIPDetails(ip, data.requests);
+                    displayIPDetails(ip, data.requests, data.total_traffic_mb);
                 } else {
                     alert('Error: ' + data.error);
                 }
@@ -636,9 +636,10 @@
             }
         }
 
-        function displayIPDetails(ip, requests) {
+        function displayIPDetails(ip, requests, totalTrafficMB) {
             document.getElementById('selectedIP').textContent = ip;
             document.getElementById('ipRequestCount').textContent = requests.length;
+            document.getElementById('ipTotalTraffic').textContent = totalTrafficMB + ' MB';
 
             const tbody = document.getElementById('ipRequestsTable');
             tbody.innerHTML = requests.map(req => `
@@ -650,7 +651,7 @@
                         <span class="px-2 py-1 text-xs rounded-full ${getStatusColor(req.status_code)}">${req.status_code}</span>
                     </td>
                     <td class="px-3 py-2 whitespace-nowrap text-sm text-gray-900">${req.response_time}ms</td>
-                    <td class="px-3 py-2 whitespace-nowrap text-sm text-gray-900">${formatBytes(req.bytes_sent)}</td>
+                    <td class="px-3 py-2 whitespace-nowrap text-sm text-gray-900">${formatBytes(req.response_size)}</td>
                 </tr>
             `).join('');
 
