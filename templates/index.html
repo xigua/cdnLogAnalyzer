@@ -18,53 +18,127 @@
     <div class="container mx-auto px-4 py-8">
         <h1 class="text-4xl font-bold text-center mb-8 text-gray-800">CDN Log Analyzer</h1>
 
-        <!-- Directory Selection -->
+        <!-- Database Statistics -->
+        <div id="dbStatsContainer" class="bg-white rounded-lg shadow-lg p-6 mb-8">
+            <h2 class="text-2xl font-semibold mb-4">Database Statistics</h2>
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div class="bg-blue-50 rounded-lg p-4">
+                    <div class="text-sm text-gray-600 mb-1">Total Logs in Database</div>
+                    <div class="text-2xl font-bold text-blue-600" id="dbTotalLogs">-</div>
+                </div>
+                <div class="bg-green-50 rounded-lg p-4">
+                    <div class="text-sm text-gray-600 mb-1">First Log</div>
+                    <div class="text-lg font-semibold text-green-600" id="dbStartTime">-</div>
+                </div>
+                <div class="bg-purple-50 rounded-lg p-4">
+                    <div class="text-sm text-gray-600 mb-1">Last Log</div>
+                    <div class="text-lg font-semibold text-purple-600" id="dbEndTime">-</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Action Buttons -->
         <div class="bg-white rounded-lg shadow-lg p-6 mb-8">
-            <h2 class="text-2xl font-semibold mb-4">Select Log Directory</h2>
+            <h2 class="text-2xl font-semibold mb-4">Actions</h2>
             <div class="flex gap-4">
-                <input type="text" id="directoryPath"
-                       placeholder="Enter directory path (e.g., /path/to/logs)"
-                       class="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent">
-                <button onclick="analyzeDirectory()"
+                <button onclick="showLoadDialog()"
+                        class="px-6 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 focus:ring-2 focus:ring-green-500 focus:ring-offset-2">
+                    📥 Load Logs
+                </button>
+                <button onclick="showAnalyzeDialog()"
                         class="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 focus:ring-2 focus:ring-blue-500 focus:ring-offset-2">
-                    Analyze Logs
+                    📊 Analyze Logs
                 </button>
             </div>
-            <div id="loadingIndicator" class="hidden mt-4">
-                <div class="text-center mb-4">
-                    <div class="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
-                    <span class="ml-2 text-gray-600">Processing log files...</span>
-                </div>
+        </div>
 
-                <!-- Progress Bar -->
-                <div class="bg-gray-200 rounded-full h-4 mb-2">
-                    <div id="progressBar" class="bg-blue-600 h-4 rounded-full transition-all duration-300" style="width: 0%"></div>
+        <!-- Load Logs Modal -->
+        <div id="loadModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
+            <div class="bg-white rounded-lg shadow-xl p-8 max-w-2xl w-full mx-4">
+                <h2 class="text-2xl font-semibold mb-4">Load Log Files</h2>
+                <div class="mb-4">
+                    <label class="block text-sm font-medium text-gray-700 mb-2">Log Directory Path</label>
+                    <input type="text" id="directoryPath"
+                           placeholder="/path/to/logs"
+                           class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent">
                 </div>
-
-                <!-- Progress Info -->
-                <div class="flex justify-between text-sm text-gray-600 mb-2">
-                    <span id="progressText">Initializing...</span>
-                    <span id="progressPercentage">0%</span>
+                <div id="loadingIndicator" class="hidden mt-4">
+                    <div class="text-center mb-4">
+                        <div class="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-green-600"></div>
+                        <span class="ml-2 text-gray-600">Loading log files...</span>
+                    </div>
+                    <div class="bg-gray-200 rounded-full h-4 mb-2">
+                        <div id="progressBar" class="bg-green-600 h-4 rounded-full transition-all duration-300" style="width: 0%"></div>
+                    </div>
+                    <div class="flex justify-between text-sm text-gray-600 mb-2">
+                        <span id="progressText">Initializing...</span>
+                        <span id="progressPercentage">0%</span>
+                    </div>
+                    <div class="bg-gray-50 rounded-lg p-3 text-sm">
+                        <div class="flex justify-between mb-1">
+                            <span>Files processed:</span>
+                            <span id="fileProgress">0 / 0</span>
+                        </div>
+                        <div class="flex justify-between mb-1">
+                            <span>Current file:</span>
+                            <span id="currentFile">-</span>
+                        </div>
+                        <div class="flex justify-between mb-1">
+                            <span>Estimated time remaining:</span>
+                            <span id="timeRemaining">Calculating...</span>
+                        </div>
+                        <div class="flex justify-between">
+                            <span>Elapsed time:</span>
+                            <span id="elapsedTime">0s</span>
+                        </div>
+                    </div>
                 </div>
+                <div class="flex gap-4 mt-6">
+                    <button onclick="startLoadLogs()" id="loadButton"
+                            class="flex-1 px-6 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700">
+                        Start Loading
+                    </button>
+                    <button onclick="closeLoadDialog()"
+                            class="px-6 py-2 bg-gray-300 text-gray-700 rounded-lg hover:bg-gray-400">
+                        Cancel
+                    </button>
+                </div>
+            </div>
+        </div>
 
-                <!-- File Progress Details -->
-                <div class="bg-gray-50 rounded-lg p-3 text-sm">
-                    <div class="flex justify-between mb-1">
-                        <span>Files processed:</span>
-                        <span id="fileProgress">0 / 0</span>
+        <!-- Analyze Modal -->
+        <div id="analyzeModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
+            <div class="bg-white rounded-lg shadow-xl p-8 max-w-2xl w-full mx-4">
+                <h2 class="text-2xl font-semibold mb-4">Analyze Logs</h2>
+                <div class="grid grid-cols-2 gap-4 mb-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">Start Time</label>
+                        <input type="datetime-local" id="startTime"
+                               class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500">
                     </div>
-                    <div class="flex justify-between mb-1">
-                        <span>Current file:</span>
-                        <span id="currentFile">-</span>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">End Time</label>
+                        <input type="datetime-local" id="endTime"
+                               class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500">
                     </div>
-                    <div class="flex justify-between mb-1">
-                        <span>Estimated time remaining:</span>
-                        <span id="timeRemaining">Calculating...</span>
+                </div>
+                <div id="analyzeLoading" class="hidden mt-4">
+                    <div class="mb-2">
+                        <div class="w-full bg-gray-200 rounded-full h-4 overflow-hidden">
+                            <div id="analyzeProgressBar" class="bg-blue-600 h-4 rounded-full transition-all duration-300" style="width: 0%"></div>
+                        </div>
                     </div>
-                    <div class="flex justify-between">
-                        <span>Elapsed time:</span>
-                        <span id="elapsedTime">0s</span>
-                    </div>
+                    <p id="analyzeProgressText" class="text-sm text-gray-600 text-center">Starting analysis...</p>
+                </div>
+                <div class="flex gap-4 mt-6">
+                    <button onclick="startAnalyze()" id="analyzeButton"
+                            class="flex-1 px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700">
+                        Start Analysis
+                    </button>
+                    <button onclick="closeAnalyzeDialog()"
+                            class="px-6 py-2 bg-gray-300 text-gray-700 rounded-lg hover:bg-gray-400">
+                        Cancel
+                    </button>
                 </div>
             </div>
         </div>
@@ -316,6 +390,146 @@
         let hourlyTrafficChart = null;
         let cachePerformanceChart = null;
 
+        // Modal control functions
+        function showLoadDialog() {
+            document.getElementById('loadModal').classList.remove('hidden');
+            document.getElementById('loadModal').classList.add('flex');
+            document.getElementById('directoryPath').value = '/Users/xigua/Downloads/zhisai-logs';
+        }
+
+        function closeLoadDialog() {
+            document.getElementById('loadModal').classList.add('hidden');
+            document.getElementById('loadModal').classList.remove('flex');
+            document.getElementById('loadingIndicator').classList.add('hidden');
+        }
+
+        function showAnalyzeDialog() {
+            document.getElementById('analyzeModal').classList.remove('hidden');
+            document.getElementById('analyzeModal').classList.add('flex');
+
+            const startTime = document.getElementById('dbStartTime').textContent;
+            const endTime = document.getElementById('dbEndTime').textContent;
+
+            if (startTime !== '-' && startTime !== 'No data') {
+                const start = new Date(startTime);
+                document.getElementById('startTime').value = start.toISOString().slice(0, 16);
+            }
+
+            if (endTime !== '-' && endTime !== 'No data') {
+                const end = new Date(endTime);
+                document.getElementById('endTime').value = end.toISOString().slice(0, 16);
+            }
+        }
+
+        function closeAnalyzeDialog() {
+            document.getElementById('analyzeModal').classList.add('hidden');
+            document.getElementById('analyzeModal').classList.remove('flex');
+            document.getElementById('analyzeLoading').classList.add('hidden');
+        }
+
+        // Load logs function
+        async function startLoadLogs() {
+            const directoryPath = document.getElementById('directoryPath').value;
+            if (!directoryPath) {
+                alert('Please enter a directory path');
+                return;
+            }
+
+            document.getElementById('loadButton').disabled = true;
+            await analyzeDirectory();
+        }
+
+        async function startAnalyze() {
+            const startTime = document.getElementById('startTime').value;
+            const endTime = document.getElementById('endTime').value;
+
+            if (!startTime || !endTime) {
+                alert('Please select both start and end times');
+                return;
+            }
+
+            // Close any existing EventSource
+            if (currentEventSource) {
+                currentEventSource.close();
+                currentEventSource = null;
+            }
+
+            const analyzeLoading = document.getElementById('analyzeLoading');
+            const analyzeButton = document.getElementById('analyzeButton');
+            const analyzeProgress = document.getElementById('analyzeProgress');
+            const analyzeProgressBar = document.getElementById('analyzeProgressBar');
+            const analyzeProgressText = document.getElementById('analyzeProgressText');
+
+            analyzeLoading.classList.remove('hidden');
+            analyzeButton.disabled = true;
+
+            // First, send the POST request to start the analysis
+            try {
+                const response = await fetch('/api/analyze-range', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        start_time: new Date(startTime).toISOString(),
+                        end_time: new Date(endTime).toISOString()
+                    })
+                });
+
+                if (!response.ok) {
+                    throw new Error('Failed to start analysis');
+                }
+
+                // Read the SSE stream
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+
+                while (true) {
+                    const {done, value} = await reader.read();
+
+                    if (done) break;
+
+                    buffer += decoder.decode(value, {stream: true});
+                    const lines = buffer.split('\n\n');
+                    buffer = lines.pop(); // Keep incomplete line in buffer
+
+                    for (const line of lines) {
+                        if (line.startsWith('data: ')) {
+                            const data = JSON.parse(line.substring(6));
+
+                            // Update progress
+                            if (data.progress !== undefined) {
+                                const percent = Math.round(data.progress * 100);
+                                analyzeProgressBar.style.width = percent + '%';
+                                analyzeProgressText.textContent = data.message || `${percent}%`;
+                            }
+
+                            // Handle completion
+                            if (data.status === 'completed') {
+                                displayResults(data.results);
+                                document.getElementById('resultsContainer').classList.remove('hidden');
+                                closeAnalyzeDialog();
+                                analyzeLoading.classList.add('hidden');
+                                analyzeButton.disabled = false;
+                                break;
+                            }
+
+                            // Handle error
+                            if (data.status === 'error') {
+                                alert('Analysis failed: ' + data.message);
+                                analyzeLoading.classList.add('hidden');
+                                analyzeButton.disabled = false;
+                                break;
+                            }
+                        }
+                    }
+                }
+            } catch (error) {
+                alert('Analysis failed: ' + error.message);
+                analyzeLoading.classList.add('hidden');
+                analyzeButton.disabled = false;
+            }
+        }
+
         async function analyzeDirectory() {
             const directoryPath = document.getElementById('directoryPath').value;
             if (!directoryPath) {
@@ -371,10 +585,17 @@
                         currentEventSource = null;
                         clearInterval(progressInterval);
                         progressInterval = null;
-                        analysisData = progressData.results;  // Store the analysis data
-                        displayResults(progressData.results);
-                        resultsContainer.classList.remove('hidden');
-                        loadingIndicator.classList.add('hidden');
+
+                        // Close the loading dialog
+                        closeLoadDialog();
+
+                        // Reload database statistics
+                        loadDbStats();
+
+                        // Re-enable load button
+                        document.getElementById('loadButton').disabled = false;
+
+                        alert('✅ Log files loaded successfully!');
                     }
                 };
 
@@ -886,6 +1107,44 @@
                 }
             }
         }
+
+        // Load database statistics on page load
+        async function loadDbStats() {
+            try {
+                const response = await fetch('/api/db-stats');
+                const data = await response.json();
+
+                if (data.error) {
+                    console.error('Error loading DB stats:', data.error);
+                    return;
+                }
+
+                // Update UI
+                document.getElementById('dbTotalLogs').textContent = data.total_logs.toLocaleString();
+
+                if (data.start_time) {
+                    const startDate = new Date(data.start_time);
+                    document.getElementById('dbStartTime').textContent = startDate.toLocaleString();
+                } else {
+                    document.getElementById('dbStartTime').textContent = 'No data';
+                }
+
+                if (data.end_time) {
+                    const endDate = new Date(data.end_time);
+                    document.getElementById('dbEndTime').textContent = endDate.toLocaleString();
+                } else {
+                    document.getElementById('dbEndTime').textContent = 'No data';
+                }
+            } catch (error) {
+                console.error('Failed to load DB stats:', error);
+                document.getElementById('dbTotalLogs').textContent = 'Error';
+                document.getElementById('dbStartTime').textContent = 'Error';
+                document.getElementById('dbEndTime').textContent = 'Error';
+            }
+        }
+
+        // Load DB stats on page load
+        loadDbStats();
 
         // Set default directory path
         document.getElementById('directoryPath').value = '/Users/xigua/Downloads/zhisai-logs';

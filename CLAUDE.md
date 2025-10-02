@@ -8,16 +8,23 @@ CDN Log Analyzer is a Flask web application that analyzes CDN access logs from g
 
 ## Commands
 
+### Prerequisites
+Ensure PostgreSQL is running on `127.0.0.1:5432` with:
+- Username: `postgres`
+- Password: `postgres`
+
+The database `cdn_logs` will be created automatically on first run.
+
+### Installing Dependencies
+```bash
+pip3 install -r requirements.txt
+```
+
 ### Running the Application
 ```bash
 python3 app.py
 ```
-The app runs on `http://0.0.0.0:8080` by default.
-
-### Installing Dependencies
-```bash
-pip install -r requirements.txt
-```
+The app runs on `http://0.0.0.0:8080` by default. Database tables are initialized automatically on startup.
 
 ## Architecture
 
@@ -85,8 +92,37 @@ The analyzer uses SSE to stream progress:
 - Provides estimated remaining time based on processing speed
 - Tracks current file, file count, and analysis step
 
-### Global State
-`global_log_entries` (app.py:768) stores all parsed log entries in memory after analysis to support detail queries. This means:
-- Memory usage scales with log file size
-- IP details and blacklist generation require prior analysis
-- Data persists only for the current server instance
+### Database Architecture
+
+**PostgreSQL Database: `cdn_logs`**
+
+Two main tables:
+
+1. **`log_entries`** - Stores all individual CDN log entries
+   - Indexed on `ip` and `timestamp` for fast queries
+   - Contains: timestamp, IP, response_time, method, URL, status codes, bytes_sent, cache_status, user_agent, etc.
+
+2. **`ip_statistics`** - Pre-aggregated IP statistics for faster analysis
+   - Primary key: `ip`
+   - Calculated fields: total_requests, total_bytes_sent, unique_urls, unique_user_agents
+   - Static vs dynamic classification: `static_requests`, `dynamic_requests`, `is_static_only`
+   - Time tracking: `first_seen`, `last_seen`, `requests_per_minute`
+   - Updated via `calculate_and_store_ip_statistics()` after log import
+
+**Log Processing Flow:**
+1. Parse `.gz` files line by line
+2. Batch insert to `log_entries` (1000 records at a time)
+3. Calculate and store IP statistics in `ip_statistics` table
+4. Run analysis queries against database tables
+
+**Benefits:**
+- Handles large datasets (7+ days of logs) without memory issues
+- Persistent storage - data survives server restarts
+- Fast queries via indexes and pre-aggregated statistics
+- IP details fetched on-demand from database
+
+**API Endpoints Using Database:**
+- `/api/db-stats` - Returns total logs count and time range
+- `/api/ip-details` - Queries log_entries for specific IP
+- `/api/static-only-ips` - Reads from ip_statistics table
+- All analysis functions read from database instead of memory

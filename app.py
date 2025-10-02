@@ -15,10 +15,153 @@ import json
 from dataclasses import dataclass
 from typing import List, Dict, Any, Optional
 import statistics
+import psycopg2
+from psycopg2.extras import execute_batch, RealDictCursor
+from psycopg2.pool import SimpleConnectionPool
 
 from flask import Flask, render_template, request, jsonify, Response
+from decimal import Decimal
 
 app = Flask(__name__)
+
+# Custom JSON encoder to handle Decimal types from PostgreSQL
+class DecimalEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, Decimal):
+            return float(obj)
+        return super(DecimalEncoder, self).default(obj)
+
+# Database configuration
+DB_CONFIG = {
+    'host': '127.0.0.1',
+    'port': 5432,
+    'user': 'postgres',
+    'password': 'postgres',
+    'database': 'cdn_logs'
+}
+
+# Connection pool
+db_pool = None
+
+def init_db():
+    """Initialize database and create tables"""
+    global db_pool
+
+    # First connect to default postgres database to create cdn_logs database
+    conn = psycopg2.connect(
+        host=DB_CONFIG['host'],
+        port=DB_CONFIG['port'],
+        user=DB_CONFIG['user'],
+        password=DB_CONFIG['password'],
+        database='postgres'
+    )
+    conn.autocommit = True
+    cursor = conn.cursor()
+
+    # Check if database exists
+    cursor.execute("SELECT 1 FROM pg_database WHERE datname = 'cdn_logs'")
+    if not cursor.fetchone():
+        cursor.execute("CREATE DATABASE cdn_logs")
+        print("Database 'cdn_logs' created successfully")
+
+    cursor.close()
+    conn.close()
+
+    # Now connect to cdn_logs database
+    db_pool = SimpleConnectionPool(1, 20, **DB_CONFIG)
+
+    conn = db_pool.getconn()
+    cursor = conn.cursor()
+
+    # Create log_entries table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS log_entries (
+            id BIGSERIAL PRIMARY KEY,
+            timestamp TIMESTAMP WITH TIME ZONE NOT NULL,
+            ip VARCHAR(45) NOT NULL,
+            response_time INTEGER NOT NULL,
+            method VARCHAR(10) NOT NULL,
+            url TEXT NOT NULL,
+            status_code INTEGER NOT NULL,
+            response_size INTEGER NOT NULL,
+            bytes_sent BIGINT NOT NULL,
+            cache_status VARCHAR(20) NOT NULL,
+            user_agent TEXT,
+            content_type VARCHAR(100),
+            original_ip VARCHAR(45),
+            is_dynamic BOOLEAN,
+            UNIQUE (timestamp, ip, url, status_code)
+        )
+    """)
+
+    # Create index on ip for faster queries
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_log_entries_ip ON log_entries(ip)
+    """)
+
+    # Create index on timestamp for time-based queries
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_log_entries_timestamp ON log_entries(timestamp)
+    """)
+
+    # Create index on is_dynamic for faster filtering
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_log_entries_is_dynamic ON log_entries(is_dynamic)
+    """)
+
+    # Create ip_statistics table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS ip_statistics (
+            ip VARCHAR(45) PRIMARY KEY,
+            total_requests INTEGER NOT NULL,
+            total_bytes_sent BIGINT NOT NULL,
+            unique_urls INTEGER NOT NULL,
+            unique_user_agents INTEGER NOT NULL,
+            static_requests INTEGER NOT NULL,
+            dynamic_requests INTEGER NOT NULL,
+            is_static_only BOOLEAN NOT NULL,
+            first_seen TIMESTAMP WITH TIME ZONE NOT NULL,
+            last_seen TIMESTAMP WITH TIME ZONE NOT NULL,
+            requests_per_minute FLOAT,
+            updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    # Create geo_location cache table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS geo_location (
+            ip VARCHAR(45) PRIMARY KEY,
+            country VARCHAR(100),
+            country_code VARCHAR(10),
+            region VARCHAR(100),
+            city VARCHAR(100),
+            latitude FLOAT,
+            longitude FLOAT,
+            isp VARCHAR(200),
+            organization VARCHAR(200),
+            as_number VARCHAR(50),
+            as_name VARCHAR(200),
+            is_mobile BOOLEAN,
+            is_proxy BOOLEAN,
+            is_hosting BOOLEAN,
+            timezone VARCHAR(50),
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    conn.commit()
+    cursor.close()
+    db_pool.putconn(conn)
+
+    print("Database tables initialized successfully")
+
+def get_db_connection():
+    """Get a connection from the pool"""
+    return db_pool.getconn()
+
+def release_db_connection(conn):
+    """Release a connection back to the pool"""
+    db_pool.putconn(conn)
 
 @dataclass
 class LogEntry:
@@ -47,6 +190,18 @@ class LogAnalyzer:
         )
         self.progress_callback = None
 
+    # Import time-range analysis methods
+    from time_range_analysis import (
+        calculate_ip_statistics_for_range,
+        _compute_basic_stats_for_range,
+        analyze_traffic_by_url_for_range,
+        analyze_hourly_traffic_for_range,
+        analyze_user_behavior_for_range,
+        detect_suspicious_patterns_for_range,
+        analyze_performance_for_range,
+        analyze_static_vs_dynamic_traffic_for_range
+    )
+
     def parse_log_line(self, line: str) -> Optional[LogEntry]:
         match = self.log_pattern.match(line.strip())
         if not match:
@@ -69,6 +224,108 @@ class LogAnalyzer:
             content_type=match.group(11),
             original_ip=match.group(12)
         )
+
+    def insert_entries_to_db(self, entries_batch):
+        """Insert a batch of log entries into the database, skipping duplicates"""
+        if not entries_batch:
+            return
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        # Prepare data for batch insert
+        insert_data = [
+            (
+                entry.timestamp,
+                entry.ip,
+                entry.response_time,
+                entry.method,
+                entry.url,
+                entry.status_code,
+                entry.response_size,
+                entry.bytes_sent,
+                entry.cache_status,
+                entry.user_agent,
+                entry.content_type,
+                entry.original_ip,
+                # Pre-calculate is_dynamic to avoid scanning in aggregation
+                ('/api/' in entry.url or '/chess/' in entry.url or '/homework/' in entry.url)
+            )
+            for entry in entries_batch
+        ]
+
+        # Batch insert with ON CONFLICT DO NOTHING to skip duplicates
+        execute_batch(cursor, """
+            INSERT INTO log_entries (
+                timestamp, ip, response_time, method, url, status_code,
+                response_size, bytes_sent, cache_status, user_agent,
+                content_type, original_ip, is_dynamic
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (timestamp, ip, url, status_code) DO NOTHING
+        """, insert_data, page_size=500)
+
+        conn.commit()
+        cursor.close()
+        release_db_connection(conn)
+
+    def calculate_and_store_ip_statistics(self):
+        """Calculate IP statistics from database and store in ip_statistics table"""
+        print("Starting IP statistics calculation...")
+        start_time = time.time()
+
+        conn = get_db_connection()
+        # Set statement timeout to 10 minutes
+        conn.set_session(autocommit=False)
+        cursor = conn.cursor()
+
+        try:
+            # Set statement timeout
+            cursor.execute("SET statement_timeout = '600000'")  # 10 minutes
+
+            # Clear existing IP statistics
+            print("Truncating ip_statistics table...")
+            cursor.execute("TRUNCATE TABLE ip_statistics")
+            conn.commit()
+
+            # Calculate IP statistics using optimized SQL aggregation with pre-computed is_dynamic
+            print("Calculating IP statistics (this may take a few minutes for large datasets)...")
+            cursor.execute("""
+                INSERT INTO ip_statistics (
+                    ip, total_requests, total_bytes_sent, unique_urls, unique_user_agents,
+                    static_requests, dynamic_requests, is_static_only,
+                    first_seen, last_seen, requests_per_minute
+                )
+                SELECT
+                    ip,
+                    COUNT(*) as total_requests,
+                    SUM(bytes_sent) as total_bytes_sent,
+                    COUNT(DISTINCT url) as unique_urls,
+                    COUNT(DISTINCT user_agent) as unique_user_agents,
+                    SUM(CASE WHEN is_dynamic = FALSE THEN 1 ELSE 0 END) as static_requests,
+                    SUM(CASE WHEN is_dynamic = TRUE THEN 1 ELSE 0 END) as dynamic_requests,
+                    BOOL_AND(COALESCE(is_dynamic, FALSE) = FALSE) as is_static_only,
+                    MIN(timestamp) as first_seen,
+                    MAX(timestamp) as last_seen,
+                    CASE
+                        WHEN EXTRACT(EPOCH FROM (MAX(timestamp) - MIN(timestamp))) / 60 > 0
+                        THEN COUNT(*)::float / (EXTRACT(EPOCH FROM (MAX(timestamp) - MIN(timestamp))) / 60)
+                        ELSE 0
+                    END as requests_per_minute
+                FROM log_entries
+                GROUP BY ip
+            """)
+
+            conn.commit()
+            elapsed = time.time() - start_time
+            print(f"IP statistics calculation completed in {elapsed:.2f} seconds")
+
+        except Exception as e:
+            print(f"Error calculating IP statistics: {e}")
+            conn.rollback()
+            raise
+        finally:
+            cursor.close()
+            release_db_connection(conn)
 
     def process_directory(self, directory_path: str, progress_callback=None) -> Dict[str, Any]:
         """Process all .gz files in directory and return analysis results"""
@@ -418,69 +675,56 @@ class LogAnalyzer:
         return results
 
     def _compute_basic_stats(self) -> Dict[str, Any]:
-        """Compute basic statistics efficiently"""
-        total_requests = len(self.entries)
+        """Compute basic statistics from database"""
+        conn = get_db_connection()
+        cursor = conn.cursor()
 
-        # Use set comprehension for unique IPs (more efficient than generator)
-        unique_ips = len({entry.ip for entry in self.entries})
+        cursor.execute("""
+            SELECT
+                COUNT(*) as total_requests,
+                COUNT(DISTINCT ip) as unique_ips,
+                MIN(timestamp) as start_time,
+                MAX(timestamp) as end_time
+            FROM log_entries
+        """)
 
-        # Get time range efficiently
-        timestamps = [entry.timestamp for entry in self.entries]
+        row = cursor.fetchone()
+        cursor.close()
+        release_db_connection(conn)
 
         return {
-            'total_requests': total_requests,
-            'unique_ips': unique_ips,
+            'total_requests': row[0] if row[0] else 0,
+            'unique_ips': row[1] if row[1] else 0,
             'time_range': {
-                'start': min(timestamps).isoformat(),
-                'end': max(timestamps).isoformat()
+                'start': row[2].isoformat() if row[2] else '',
+                'end': row[3].isoformat() if row[3] else ''
             }
         }
 
     def analyze_traffic_by_ip(self) -> List[Dict]:
-        """Analyze traffic consumption by IP address - optimized version"""
-        ip_stats = {}
+        """Analyze traffic consumption by IP address - from database"""
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
 
-        for entry in self.entries:
-            ip = entry.ip
-            if ip not in ip_stats:
-                ip_stats[ip] = {
-                    'requests': 0,
-                    'bytes_sent': 0,
-                    'unique_urls': set(),
-                    'user_agents': set(),
-                    'timestamps': []
-                }
+        cursor.execute("""
+            SELECT
+                ip,
+                total_requests as requests,
+                total_bytes_sent as bytes_sent,
+                unique_urls,
+                unique_user_agents as unique_user_agents,
+                EXTRACT(EPOCH FROM (last_seen - first_seen)) / 60 as duration_minutes,
+                requests_per_minute
+            FROM ip_statistics
+            ORDER BY total_bytes_sent DESC
+            LIMIT 50
+        """)
 
-            stats = ip_stats[ip]
-            stats['requests'] += 1
-            stats['bytes_sent'] += entry.bytes_sent
-            stats['unique_urls'].add(entry.url)
-            stats['user_agents'].add(entry.user_agent)
-            stats['timestamps'].append(entry.timestamp)
+        results = cursor.fetchall()
+        cursor.close()
+        release_db_connection(conn)
 
-        # Convert to list and calculate derived metrics
-        result = []
-        for ip, stats in ip_stats.items():
-            timestamps = stats['timestamps']
-            if len(timestamps) > 1:
-                duration_seconds = (max(timestamps) - min(timestamps)).total_seconds()
-                duration_minutes = duration_seconds / 60
-                requests_per_minute = stats['requests'] / max(1, duration_minutes)
-            else:
-                duration_minutes = 0
-                requests_per_minute = 0
-
-            result.append({
-                'ip': ip,
-                'requests': stats['requests'],
-                'bytes_sent': stats['bytes_sent'],
-                'unique_urls': len(stats['unique_urls']),
-                'unique_user_agents': len(stats['user_agents']),
-                'duration_minutes': duration_minutes,
-                'requests_per_minute': requests_per_minute
-            })
-
-        return sorted(result, key=lambda x: x['bytes_sent'], reverse=True)[:50]
+        return [dict(row) for row in results]
 
     def analyze_traffic_by_url(self) -> List[Dict]:
         """Analyze traffic consumption by URL"""
@@ -583,105 +827,113 @@ class LogAnalyzer:
         }
 
     def analyze_static_vs_dynamic_traffic(self) -> Dict[str, Any]:
-        """Analyze IPs that only access static content vs those accessing dynamic APIs"""
-        # Group entries by IP
-        ip_behaviors = {}
+        """Analyze IPs that only access static content vs those accessing dynamic APIs - from database"""
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
 
-        for entry in self.entries:
-            ip = entry.ip
-            if ip not in ip_behaviors:
-                ip_behaviors[ip] = {
-                    'static_requests': 0,
-                    'dynamic_requests': 0,
-                    'total_requests': 0,
-                    'total_bytes': 0,
-                    'urls': set(),
-                    'user_agents': set()
-                }
+        # Get total traffic
+        cursor.execute("SELECT SUM(bytes_sent) FROM log_entries")
+        total_traffic = cursor.fetchone()[0] or 0
 
-            behavior = ip_behaviors[ip]
-            behavior['total_requests'] += 1
-            behavior['total_bytes'] += entry.bytes_sent
-            behavior['urls'].add(entry.url)
-            behavior['user_agents'].add(entry.user_agent)
+        # Get static-only IPs
+        cursor.execute("""
+            SELECT
+                ip,
+                total_requests,
+                static_requests,
+                dynamic_requests,
+                total_bytes_sent as total_bytes,
+                unique_urls,
+                unique_user_agents,
+                (static_requests::float / total_requests * 100) as static_percentage
+            FROM ip_statistics
+            WHERE is_static_only = TRUE
+            ORDER BY total_bytes_sent DESC
+            LIMIT 20
+        """)
+        static_only_ips = [dict(row) for row in cursor.fetchall()]
 
-            # More conservative approach - only clear API calls and pages that real users access
-            is_dynamic = (
-                '/api/' in entry.url                     # API endpoints
-                or '/chess/' in entry.url                # Dynamic chess pages
-                or '/homework/' in entry.url             # Dynamic homework pages
-            )
-
-            if is_dynamic:
-                behavior['dynamic_requests'] += 1
-            else:
-                behavior['static_requests'] += 1
-
-        # Analyze patterns
-        static_only_ips = []
-        mixed_ips = []
-        dynamic_only_ips = []
-
-        total_static_only_traffic = 0
-        total_mixed_traffic = 0
-        total_dynamic_only_traffic = 0
-        total_traffic = sum(entry.bytes_sent for entry in self.entries)
-
-        for ip, behavior in ip_behaviors.items():
-            ip_data = {
-                'ip': ip,
-                'total_requests': behavior['total_requests'],
-                'static_requests': behavior['static_requests'],
-                'dynamic_requests': behavior['dynamic_requests'],
-                'total_bytes': behavior['total_bytes'],
-                'unique_urls': len(behavior['urls']),
-                'unique_user_agents': len(behavior['user_agents']),
-                'static_percentage': (behavior['static_requests'] / behavior['total_requests'] * 100) if behavior['total_requests'] > 0 else 0
-            }
-
-            if behavior['dynamic_requests'] == 0:
-                static_only_ips.append(ip_data)
-                total_static_only_traffic += behavior['total_bytes']
-            elif behavior['static_requests'] == 0:
-                dynamic_only_ips.append(ip_data)
-                total_dynamic_only_traffic += behavior['total_bytes']
-            else:
-                mixed_ips.append(ip_data)
-                total_mixed_traffic += behavior['total_bytes']
-
-        # Sort by traffic volume
-        static_only_ips.sort(key=lambda x: x['total_bytes'], reverse=True)
-        mixed_ips.sort(key=lambda x: x['total_bytes'], reverse=True)
-
-        # Simplified analysis - just add basic bot indicators without expensive processing
+        # Add bot indicators to static-only IPs
         for ip_data in static_only_ips:
-            # Since these are already static-only, they get a base bot score
             ip_data['bot_indicators'] = ['Only static assets', 'No API requests']
-            ip_data['bot_score'] = 2  # Base score for static-only IPs
+            ip_data['bot_score'] = 2
+
+        # Get mixed IPs
+        cursor.execute("""
+            SELECT
+                ip,
+                total_requests,
+                static_requests,
+                dynamic_requests,
+                total_bytes_sent as total_bytes,
+                unique_urls,
+                unique_user_agents,
+                (static_requests::float / total_requests * 100) as static_percentage
+            FROM ip_statistics
+            WHERE is_static_only = FALSE AND static_requests > 0 AND dynamic_requests > 0
+            ORDER BY total_bytes_sent DESC
+            LIMIT 10
+        """)
+        mixed_ips = [dict(row) for row in cursor.fetchall()]
+
+        # Get dynamic-only IPs
+        cursor.execute("""
+            SELECT
+                ip,
+                total_requests,
+                static_requests,
+                dynamic_requests,
+                total_bytes_sent as total_bytes,
+                unique_urls,
+                unique_user_agents,
+                0.0 as static_percentage
+            FROM ip_statistics
+            WHERE static_requests = 0 AND dynamic_requests > 0
+            ORDER BY total_bytes_sent DESC
+            LIMIT 10
+        """)
+        dynamic_only_ips = [dict(row) for row in cursor.fetchall()]
+
+        # Get counts and traffic totals
+        cursor.execute("""
+            SELECT
+                COUNT(CASE WHEN is_static_only = TRUE THEN 1 END) as static_only_count,
+                SUM(CASE WHEN is_static_only = TRUE THEN total_bytes_sent ELSE 0 END) as static_only_traffic,
+                COUNT(CASE WHEN static_requests > 0 AND dynamic_requests > 0 THEN 1 END) as mixed_count,
+                SUM(CASE WHEN static_requests > 0 AND dynamic_requests > 0 THEN total_bytes_sent ELSE 0 END) as mixed_traffic,
+                COUNT(CASE WHEN static_requests = 0 AND dynamic_requests > 0 THEN 1 END) as dynamic_only_count,
+                SUM(CASE WHEN static_requests = 0 AND dynamic_requests > 0 THEN total_bytes_sent ELSE 0 END) as dynamic_only_traffic,
+                COUNT(*) as total_unique_ips
+            FROM ip_statistics
+        """)
+        counts = cursor.fetchone()
+
+        cursor.close()
+        release_db_connection(conn)
 
         return {
             'static_only_ips': {
-                'count': len(static_only_ips),
-                'percentage': (len(static_only_ips) / len(ip_behaviors) * 100) if ip_behaviors else 0,
-                'traffic_bytes': total_static_only_traffic,
-                'traffic_percentage': (total_static_only_traffic / total_traffic * 100) if total_traffic > 0 else 0,
-                'top_ips': static_only_ips[:20]
+                'count': counts['static_only_count'] or 0,
+                'percentage': ((counts['static_only_count'] or 0) / (counts['total_unique_ips'] or 1) * 100),
+                'traffic_bytes': counts['static_only_traffic'] or 0,
+                'traffic_percentage': ((counts['static_only_traffic'] or 0) / max(total_traffic, 1) * 100),
+                'top_ips': static_only_ips
             },
             'mixed_ips': {
-                'count': len(mixed_ips),
-                'percentage': (len(mixed_ips) / len(ip_behaviors) * 100) if ip_behaviors else 0,
-                'traffic_bytes': total_mixed_traffic,
-                'traffic_percentage': (total_mixed_traffic / total_traffic * 100) if total_traffic > 0 else 0,
-                'top_ips': mixed_ips[:10]
+                'count': counts['mixed_count'] or 0,
+                'percentage': ((counts['mixed_count'] or 0) / (counts['total_unique_ips'] or 1) * 100),
+                'traffic_bytes': counts['mixed_traffic'] or 0,
+                'traffic_percentage': ((counts['mixed_traffic'] or 0) / max(total_traffic, 1) * 100),
+                'top_ips': mixed_ips
             },
             'dynamic_only_ips': {
-                'count': len(dynamic_only_ips),
-                'percentage': (len(dynamic_only_ips) / len(ip_behaviors) * 100) if ip_behaviors else 0,
-                'traffic_bytes': total_dynamic_only_traffic,
-                'traffic_percentage': (total_dynamic_only_traffic / total_traffic * 100) if total_traffic > 0 else 0,
-                'top_ips': dynamic_only_ips[:10]
+                'count': counts['dynamic_only_count'] or 0,
+                'percentage': ((counts['dynamic_only_count'] or 0) / (counts['total_unique_ips'] or 1) * 100),
+                'traffic_bytes': counts['dynamic_only_traffic'] or 0,
+                'traffic_percentage': ((counts['dynamic_only_traffic'] or 0) / max(total_traffic, 1) * 100),
+                'top_ips': dynamic_only_ips
             },
-            'total_unique_ips': len(ip_behaviors),
+            'total_unique_ips': counts['total_unique_ips'] or 0,
             'total_traffic_bytes': total_traffic
         }
 
@@ -824,11 +1076,16 @@ def analyze_logs_with_progress():
             }
             yield progress_callback(initial_data)
 
+            # Batch processing buffer
+            batch_buffer = []
+            batch_size = 5000  # Increased batch size to reduce DB commits
+            total_lines_processed = 0
+
             for i, filename in enumerate(gz_files):
                 filepath = os.path.join(directory_path, filename)
 
-                # Send file start progress (file processing takes 85% of total progress)
-                file_progress = (i / total_files) * 0.85 if total_files > 0 else 0
+                # Send file start progress (file processing takes 70% of total progress)
+                file_progress = (i / total_files) * 0.7 if total_files > 0 else 0
                 progress_data = {
                     'progress': file_progress,
                     'message': f'Processing file {i + 1} of {total_files}',
@@ -844,22 +1101,67 @@ def analyze_logs_with_progress():
                     for line in f:
                         entry = analyzer_instance.parse_log_line(line)
                         if entry:
-                            analyzer_instance.entries.append(entry)
+                            batch_buffer.append(entry)
                         line_count += 1
+                        total_lines_processed += 1
 
-                        # Send progress every 1000 lines
-                        if line_count % 1000 == 0:
-                            # Mid-file progress: current file + 50% progress within current file
-                            file_progress = ((i + 0.5) / total_files) * 0.85 if total_files > 0 else 0.425
+                        # Insert batch when buffer is full
+                        if len(batch_buffer) >= batch_size:
+                            # Send DB insert progress
                             progress_data = {
-                                'progress': min(file_progress, 0.85),  # Cap at 85% for file processing
-                                'message': f'Processing file {i + 1} of {total_files} ({line_count:,} lines processed)',
+                                'progress': min(((i + 0.5) / total_files) * 0.7, 0.7),
+                                'message': f'Inserting {len(batch_buffer)} entries to database...',
                                 'current_file_index': i + 1,
                                 'total_files': total_files,
                                 'current_file': filename,
                                 'estimated_remaining_seconds': analyzer_instance._calculate_remaining_time(i, total_files, start_time)
                             }
                             yield progress_callback(progress_data)
+
+                            analyzer_instance.insert_entries_to_db(batch_buffer)
+                            batch_buffer = []
+
+                        # Send progress every 5000 lines
+                        if line_count % 5000 == 0:
+                            # Mid-file progress: current file + 50% progress within current file
+                            file_progress = ((i + 0.5) / total_files) * 0.7 if total_files > 0 else 0.35
+                            progress_data = {
+                                'progress': min(file_progress, 0.7),  # Cap at 70% for file processing
+                                'message': f'Processing file {i + 1} of {total_files} ({total_lines_processed:,} total lines)',
+                                'current_file_index': i + 1,
+                                'total_files': total_files,
+                                'current_file': filename,
+                                'estimated_remaining_seconds': analyzer_instance._calculate_remaining_time(i, total_files, start_time)
+                            }
+                            yield progress_callback(progress_data)
+
+            # Insert remaining entries
+            if batch_buffer:
+                progress_data = {
+                    'progress': 0.7,
+                    'message': f'Inserting final {len(batch_buffer)} entries to database...',
+                    'current_file_index': total_files,
+                    'total_files': total_files,
+                    'current_file': '',
+                    'estimated_remaining_seconds': 5
+                }
+                yield progress_callback(progress_data)
+                analyzer_instance.insert_entries_to_db(batch_buffer)
+                batch_buffer = []
+
+            # Send IP statistics calculation progress
+            ip_stats_progress = {
+                'progress': 0.7,
+                'message': 'Calculating IP statistics...',
+                'current_file_index': total_files,
+                'total_files': total_files,
+                'current_file': '',
+                'estimated_remaining_seconds': 10
+            }
+            yield progress_callback(ip_stats_progress)
+
+            # Calculate and store IP statistics
+            analyzer_instance.calculate_and_store_ip_statistics()
 
             # Send analysis phase progress
             analysis_data = {
@@ -871,10 +1173,6 @@ def analyze_logs_with_progress():
                 'estimated_remaining_seconds': 5  # Estimate 5 seconds for analysis
             }
             yield progress_callback(analysis_data)
-
-            # Store entries globally for IP details lookup
-            global global_log_entries
-            global_log_entries = analyzer_instance.entries.copy()
 
             # Run analysis with progress tracking (step by step)
             analysis_steps = [
@@ -949,47 +1247,193 @@ def analyze_logs_with_progress():
         }
     )
 
+@app.route('/api/db-stats', methods=['GET'])
+def get_db_stats():
+    """Get database statistics (total logs and time range)"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT
+                COUNT(*) as total_logs,
+                MIN(timestamp) as start_time,
+                MAX(timestamp) as end_time
+            FROM log_entries
+        """)
+
+        row = cursor.fetchone()
+        cursor.close()
+        release_db_connection(conn)
+
+        return jsonify({
+            'total_logs': row[0] if row[0] else 0,
+            'start_time': row[1].isoformat() if row[1] else None,
+            'end_time': row[2].isoformat() if row[2] else None
+        })
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/analyze-range', methods=['POST'])
+def analyze_time_range():
+    """Analyze logs within a specific time range with SSE progress"""
+    import traceback
+
+    data = request.json
+    start_time = data.get('start_time')
+    end_time = data.get('end_time')
+
+    print(f"\n=== Analyze Range Request ===")
+    print(f"Start time: {start_time}")
+    print(f"End time: {end_time}")
+    print(f"db_pool status: {db_pool}")
+
+    if not start_time or not end_time:
+        return jsonify({'error': 'start_time and end_time are required'}), 400
+
+    def generate():
+        try:
+            yield f"data: {json.dumps({'status': 'started', 'progress': 0, 'message': 'Starting analysis...'}, cls=DecimalEncoder)}\n\n"
+
+            print("Creating LogAnalyzer instance...")
+            analyzer_instance = LogAnalyzer()
+
+            # Recalculate IP statistics for the time range
+            yield f"data: {json.dumps({'progress': 0.1, 'message': 'Calculating IP statistics for time range...'}, cls=DecimalEncoder)}\n\n"
+            print("Calculating IP statistics for range...")
+            analyzer_instance.calculate_ip_statistics_for_range(start_time, end_time)
+
+            # Run analysis - note: analyze_traffic_by_ip() reads from ip_statistics which was just recalculated for the range
+            results = {}
+            total_steps = 8
+            current_step = 0
+
+            current_step += 1
+            yield f"data: {json.dumps({'progress': 0.2 + (current_step / total_steps) * 0.7, 'message': 'Computing basic statistics...'}, cls=DecimalEncoder)}\n\n"
+            print("Computing basic stats...")
+            results['basic_stats'] = analyzer_instance._compute_basic_stats_for_range(start_time, end_time)
+
+            current_step += 1
+            yield f"data: {json.dumps({'progress': 0.2 + (current_step / total_steps) * 0.7, 'message': 'Analyzing traffic by IP...'}, cls=DecimalEncoder)}\n\n"
+            print("Analyzing traffic by IP...")
+            results['traffic_by_ip'] = analyzer_instance.analyze_traffic_by_ip()
+
+            current_step += 1
+            yield f"data: {json.dumps({'progress': 0.2 + (current_step / total_steps) * 0.7, 'message': 'Analyzing traffic by URL...'}, cls=DecimalEncoder)}\n\n"
+            print("Analyzing traffic by URL...")
+            results['traffic_by_url'] = analyzer_instance.analyze_traffic_by_url_for_range(start_time, end_time)
+
+            current_step += 1
+            yield f"data: {json.dumps({'progress': 0.2 + (current_step / total_steps) * 0.7, 'message': 'Analyzing hourly traffic patterns...'}, cls=DecimalEncoder)}\n\n"
+            print("Analyzing hourly traffic...")
+            results['hourly_traffic'] = analyzer_instance.analyze_hourly_traffic_for_range(start_time, end_time)
+
+            current_step += 1
+            yield f"data: {json.dumps({'progress': 0.2 + (current_step / total_steps) * 0.7, 'message': 'Analyzing user behavior...'}, cls=DecimalEncoder)}\n\n"
+            print("Analyzing user behavior...")
+            results['user_behavior'] = analyzer_instance.analyze_user_behavior_for_range(start_time, end_time)
+
+            current_step += 1
+            yield f"data: {json.dumps({'progress': 0.2 + (current_step / total_steps) * 0.7, 'message': 'Analyzing static vs dynamic traffic...'}, cls=DecimalEncoder)}\n\n"
+            print("Analyzing static vs dynamic...")
+            results['static_vs_dynamic_analysis'] = analyzer_instance.analyze_static_vs_dynamic_traffic_for_range()
+
+            current_step += 1
+            yield f"data: {json.dumps({'progress': 0.2 + (current_step / total_steps) * 0.7, 'message': 'Detecting suspicious patterns...'}, cls=DecimalEncoder)}\n\n"
+            print("Detecting suspicious patterns...")
+            results['suspicious_patterns'] = analyzer_instance.detect_suspicious_patterns_for_range(start_time, end_time)
+
+            current_step += 1
+            yield f"data: {json.dumps({'progress': 0.2 + (current_step / total_steps) * 0.7, 'message': 'Analyzing performance metrics...'}, cls=DecimalEncoder)}\n\n"
+            print("Analyzing performance...")
+            results['performance_stats'] = analyzer_instance.analyze_performance_for_range(start_time, end_time)
+
+            print("Analysis complete!")
+            yield f"data: {json.dumps({'status': 'completed', 'progress': 1.0, 'message': 'Analysis complete!', 'results': results, 'time_range': {'start': start_time, 'end': end_time}}, cls=DecimalEncoder)}\n\n"
+
+        except Exception as e:
+            print(f"\n!!! ERROR in analyze_time_range !!!")
+            print(f"Error type: {type(e).__name__}")
+            print(f"Error message: {str(e)}")
+            print(f"Full traceback:")
+            traceback.print_exc()
+            print(f"db_pool at error: {db_pool}")
+            yield f"data: {json.dumps({'status': 'error', 'message': str(e)}, cls=DecimalEncoder)}\n\n"
+
+    return Response(
+        generate(),
+        mimetype='text/event-stream',
+        headers={
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive',
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Headers': 'Content-Type'
+        }
+    )
+
 @app.route('/api/ip-details', methods=['POST'])
 def get_ip_details():
+    """Get detailed request history for a specific IP from database"""
     ip = request.json.get('ip')
 
     if not ip:
         return jsonify({'error': 'IP address is required'}), 400
 
     try:
-        global global_log_entries
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
 
-        if not global_log_entries:
-            return jsonify({'error': 'No log data available. Please run analysis first.'}), 400
+        # Get all log entries for this IP
+        cursor.execute("""
+            SELECT
+                timestamp,
+                method,
+                url,
+                status_code,
+                response_time,
+                response_size,
+                user_agent,
+                cache_status
+            FROM log_entries
+            WHERE ip = %s
+            ORDER BY timestamp ASC
+        """, (ip,))
 
-        # Filter entries for the specified IP and sort by timestamp
-        ip_entries = [
-            {
-                'timestamp': entry.timestamp.isoformat(),
-                'method': entry.method,
-                'url': entry.url,
-                'status_code': entry.status_code,
-                'response_time': entry.response_time,
-                'response_size': entry.response_size,
-                'user_agent': entry.user_agent,
-                'cache_status': entry.cache_status
-            }
-            for entry in global_log_entries
-            if entry.ip == ip
-        ]
+        entries = cursor.fetchall()
 
-        # Sort by timestamp (ascending - oldest first)
-        ip_entries.sort(key=lambda x: x['timestamp'])
+        # Calculate total traffic
+        cursor.execute("""
+            SELECT SUM(response_size) as total_bytes
+            FROM log_entries
+            WHERE ip = %s
+        """, (ip,))
 
-        # Calculate total traffic in bytes
-        total_traffic_bytes = sum(entry['response_size'] for entry in ip_entries)
+        total_bytes = cursor.fetchone()['total_bytes'] or 0
+
+        cursor.close()
+        release_db_connection(conn)
+
+        # Convert to JSON-serializable format
+        ip_entries = []
+        for entry in entries:
+            ip_entries.append({
+                'timestamp': entry['timestamp'].isoformat(),
+                'method': entry['method'],
+                'url': entry['url'],
+                'status_code': entry['status_code'],
+                'response_time': entry['response_time'],
+                'response_size': entry['response_size'],
+                'user_agent': entry['user_agent'],
+                'cache_status': entry['cache_status']
+            })
 
         return jsonify({
             'ip': ip,
             'requests': ip_entries,
             'count': len(ip_entries),
-            'total_traffic_bytes': total_traffic_bytes,
-            'total_traffic_mb': round(total_traffic_bytes / 1024 / 1024, 2)
+            'total_traffic_bytes': total_bytes,
+            'total_traffic_mb': round(total_bytes / 1024 / 1024, 2)
         })
 
     except Exception as e:
@@ -997,22 +1441,98 @@ def get_ip_details():
 
 @app.route('/api/ip-geolocation', methods=['POST'])
 def get_ip_geolocation():
+    """Get IP geolocation with database caching"""
     ip = request.json.get('ip')
 
     if not ip:
         return jsonify({'error': 'IP address is required'}), 400
 
     try:
-        import urllib.request
-        import urllib.parse
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Using ip-api.com (free service with good accuracy)
+        # Check if we have cached geolocation data
+        cursor.execute("""
+            SELECT * FROM geo_location WHERE ip = %s
+        """, (ip,))
+
+        cached_data = cursor.fetchone()
+
+        if cached_data:
+            # Return cached data
+            cursor.close()
+            release_db_connection(conn)
+
+            return jsonify({
+                'ip': ip,
+                'country': cached_data['country'],
+                'country_code': cached_data['country_code'],
+                'region': cached_data['region'],
+                'city': cached_data['city'],
+                'latitude': cached_data['latitude'],
+                'longitude': cached_data['longitude'],
+                'isp': cached_data['isp'],
+                'organization': cached_data['organization'],
+                'as_number': cached_data['as_number'],
+                'as_name': cached_data['as_name'],
+                'is_mobile': cached_data['is_mobile'],
+                'is_proxy': cached_data['is_proxy'],
+                'is_hosting': cached_data['is_hosting'],
+                'timezone': cached_data['timezone'],
+                'cached': True
+            })
+
+        # No cache, fetch from API
+        import urllib.request
+
         url = f"http://ip-api.com/json/{ip}?fields=status,message,country,countryCode,region,regionName,city,zip,lat,lon,timezone,isp,org,as,asname,mobile,proxy,hosting"
 
         with urllib.request.urlopen(url, timeout=5) as response:
             data = json.loads(response.read().decode())
 
             if data.get('status') == 'success':
+                # Cache the result
+                cursor.execute("""
+                    INSERT INTO geo_location (
+                        ip, country, country_code, region, city, latitude, longitude,
+                        isp, organization, as_number, as_name, is_mobile, is_proxy, is_hosting, timezone
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (ip) DO UPDATE SET
+                        country = EXCLUDED.country,
+                        country_code = EXCLUDED.country_code,
+                        region = EXCLUDED.region,
+                        city = EXCLUDED.city,
+                        latitude = EXCLUDED.latitude,
+                        longitude = EXCLUDED.longitude,
+                        isp = EXCLUDED.isp,
+                        organization = EXCLUDED.organization,
+                        as_number = EXCLUDED.as_number,
+                        as_name = EXCLUDED.as_name,
+                        is_mobile = EXCLUDED.is_mobile,
+                        is_proxy = EXCLUDED.is_proxy,
+                        is_hosting = EXCLUDED.is_hosting,
+                        timezone = EXCLUDED.timezone
+                """, (
+                    ip,
+                    data.get('country', 'Unknown'),
+                    data.get('countryCode', 'Unknown'),
+                    data.get('regionName', 'Unknown'),
+                    data.get('city', 'Unknown'),
+                    data.get('lat', 0),
+                    data.get('lon', 0),
+                    data.get('isp', 'Unknown'),
+                    data.get('org', 'Unknown'),
+                    data.get('as', 'Unknown'),
+                    data.get('asname', 'Unknown'),
+                    data.get('mobile', False),
+                    data.get('proxy', False),
+                    data.get('hosting', False),
+                    data.get('timezone', 'Unknown')
+                ))
+                conn.commit()
+                cursor.close()
+                release_db_connection(conn)
+
                 return jsonify({
                     'ip': ip,
                     'country': data.get('country', 'Unknown'),
@@ -1028,13 +1548,27 @@ def get_ip_geolocation():
                     'is_mobile': data.get('mobile', False),
                     'is_proxy': data.get('proxy', False),
                     'is_hosting': data.get('hosting', False),
-                    'timezone': data.get('timezone', 'Unknown')
+                    'timezone': data.get('timezone', 'Unknown'),
+                    'cached': False
                 })
             else:
+                cursor.close()
+                release_db_connection(conn)
                 return jsonify({'error': data.get('message', 'Failed to get location data')}), 400
 
     except Exception as e:
+        if 'cursor' in locals():
+            cursor.close()
+        if 'conn' in locals():
+            release_db_connection(conn)
         return jsonify({'error': f'Failed to get geolocation: {str(e)}'}), 500
+
+@app.before_request
+def ensure_db_initialized():
+    """Ensure database is initialized before handling any request"""
+    global db_pool
+    if db_pool is None:
+        init_db()
 
 def is_subnet_safe_to_block(subnet, all_ip_behaviors):
     """
@@ -1069,38 +1603,30 @@ def is_subnet_safe_to_block(subnet, all_ip_behaviors):
 
 @app.route('/api/static-only-ips', methods=['GET'])
 def get_static_only_ips():
-    """Get all static-only IP addresses for blacklisting"""
+    """Get all static-only IP addresses for blacklisting from database"""
     try:
-        global global_log_entries
+        conn = get_db_connection()
+        cursor = conn.cursor()
 
-        if not global_log_entries:
-            return jsonify({'error': 'No log data available. Please run analysis first.'}), 400
+        # Get all static-only IPs
+        cursor.execute("""
+            SELECT ip
+            FROM ip_statistics
+            WHERE is_static_only = TRUE
+        """)
 
-        # Group entries by IP
-        ip_behaviors = {}
-        for entry in global_log_entries:
-            ip = entry.ip
-            if ip not in ip_behaviors:
-                ip_behaviors[ip] = {'dynamic_requests': 0, 'static_requests': 0}
+        static_only_ips = [row[0] for row in cursor.fetchall()]
 
-            # Check for dynamic content (same logic as main analysis)
-            is_dynamic = (
-                entry.url.startswith('/api/') or
-                '/login' in entry.url or
-                '/weixin' in entry.url or
-                entry.url == '/'
-            )
+        # Get all IP behaviors for safety check
+        cursor.execute("""
+            SELECT ip, dynamic_requests
+            FROM ip_statistics
+        """)
 
-            if is_dynamic:
-                ip_behaviors[ip]['dynamic_requests'] += 1
-            else:
-                ip_behaviors[ip]['static_requests'] += 1
+        ip_behaviors = {row[0]: {'dynamic_requests': row[1]} for row in cursor.fetchall()}
 
-        # Get only static-only IPs
-        static_only_ips = [
-            ip for ip, behavior in ip_behaviors.items()
-            if behavior['dynamic_requests'] == 0
-        ]
+        cursor.close()
+        release_db_connection(conn)
 
         # Group IPs by C-class subnet (first 3 octets)
         subnet_groups = {}
@@ -1151,4 +1677,7 @@ def get_static_only_ips():
         return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
+    # Initialize database
+    init_db()
+    print("Starting CDN Log Analyzer...")
     app.run(debug=True, host='0.0.0.0', port=8080)
