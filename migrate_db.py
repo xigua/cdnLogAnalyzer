@@ -46,8 +46,8 @@ def migrate():
             method VARCHAR(10) NOT NULL,
             url TEXT NOT NULL,
             status_code INTEGER NOT NULL,
-            response_size INTEGER NOT NULL,
-            bytes_sent BIGINT NOT NULL,
+            request_size INTEGER NOT NULL,
+            response_size BIGINT NOT NULL,
             cache_status VARCHAR(20) NOT NULL,
             user_agent TEXT,
             content_type VARCHAR(100),
@@ -77,6 +77,7 @@ def migrate():
 
     print("Migration completed successfully!")
     print("UNIQUE constraint added: (timestamp, ip, url, status_code)")
+    print("Columns: request_size (请求字节数), response_size (响应字节数/流量)")
     print("New column added: is_dynamic (for faster static/dynamic filtering)")
     print("Indexes created: ip, timestamp, is_dynamic")
 

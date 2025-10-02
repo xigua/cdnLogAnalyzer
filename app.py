@@ -83,8 +83,8 @@ def init_db():
             method VARCHAR(10) NOT NULL,
             url TEXT NOT NULL,
             status_code INTEGER NOT NULL,
-            response_size INTEGER NOT NULL,
-            bytes_sent BIGINT NOT NULL,
+            request_size INTEGER NOT NULL,
+            response_size BIGINT NOT NULL,
             cache_status VARCHAR(20) NOT NULL,
             user_agent TEXT,
             content_type VARCHAR(100),
@@ -171,8 +171,8 @@ class LogEntry:
     method: str
     url: str
     status_code: int
-    response_size: int
-    bytes_sent: int
+    request_size: int  # 请求字节数 (客户端发送)
+    response_size: int  # 响应字节数 (CDN返回，即流量)
     cache_status: str
     user_agent: str
     content_type: str
@@ -217,8 +217,8 @@ class LogAnalyzer:
             method=match.group(4),
             url=match.group(5),
             status_code=int(match.group(6)),
-            response_size=int(match.group(8)),
-            bytes_sent=int(match.group(7)),
+            request_size=int(match.group(7)),  # 请求字节数
+            response_size=int(match.group(8)),  # 响应字节数 (流量)
             cache_status=match.group(9),
             user_agent=match.group(10),
             content_type=match.group(11),
@@ -242,8 +242,8 @@ class LogAnalyzer:
                 entry.method,
                 entry.url,
                 entry.status_code,
+                entry.request_size,
                 entry.response_size,
-                entry.bytes_sent,
                 entry.cache_status,
                 entry.user_agent,
                 entry.content_type,
@@ -258,7 +258,7 @@ class LogAnalyzer:
         execute_batch(cursor, """
             INSERT INTO log_entries (
                 timestamp, ip, response_time, method, url, status_code,
-                response_size, bytes_sent, cache_status, user_agent,
+                request_size, response_size, cache_status, user_agent,
                 content_type, original_ip, is_dynamic
             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (timestamp, ip, url, status_code) DO NOTHING
@@ -298,7 +298,7 @@ class LogAnalyzer:
                 SELECT
                     ip,
                     COUNT(*) as total_requests,
-                    SUM(bytes_sent) as total_bytes_sent,
+                    SUM(response_size) as total_bytes_sent,
                     COUNT(DISTINCT url) as unique_urls,
                     COUNT(DISTINCT user_agent) as unique_user_agents,
                     SUM(CASE WHEN is_dynamic = FALSE THEN 1 ELSE 0 END) as static_requests,
@@ -730,7 +730,7 @@ class LogAnalyzer:
         """Analyze traffic consumption by URL"""
         url_stats = defaultdict(lambda: {
             'requests': 0,
-            'bytes_sent': 0,
+            'bytes_sent': 0,  # 保留字段名以保持向后兼容
             'unique_ips': set(),
             'avg_response_time': []
         })
@@ -738,7 +738,7 @@ class LogAnalyzer:
         for entry in self.entries:
             stats = url_stats[entry.url]
             stats['requests'] += 1
-            stats['bytes_sent'] += entry.bytes_sent
+            stats['bytes_sent'] += entry.response_size  # 使用response_size
             stats['unique_ips'].add(entry.ip)
             stats['avg_response_time'].append(entry.response_time)
 
@@ -765,7 +765,7 @@ class LogAnalyzer:
         for entry in self.entries:
             hour = entry.timestamp.hour
             hourly_requests[hour] += 1
-            hourly_bytes[hour] += entry.bytes_sent
+            hourly_bytes[hour] += entry.response_size  # 使用response_size
             hourly_unique_ips[hour].add(entry.ip)
 
         hourly_data = []
@@ -832,7 +832,7 @@ class LogAnalyzer:
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
         # Get total traffic
-        cursor.execute("SELECT SUM(bytes_sent) FROM log_entries")
+        cursor.execute("SELECT SUM(response_size) FROM log_entries")
         total_traffic = cursor.fetchone()[0] or 0
 
         # Get static-only IPs

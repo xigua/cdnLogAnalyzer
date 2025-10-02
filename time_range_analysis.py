@@ -42,7 +42,7 @@ def calculate_ip_statistics_for_range(self, start_time: str, end_time: str):
             SELECT
                 ip,
                 COUNT(*) as total_requests,
-                SUM(bytes_sent) as total_bytes_sent,
+                SUM(response_size) as total_bytes_sent,
                 COUNT(DISTINCT url) as unique_urls,
                 COUNT(DISTINCT user_agent) as unique_user_agents,
                 SUM(CASE WHEN is_dynamic = FALSE THEN 1 ELSE 0 END) as static_requests,
@@ -114,13 +114,13 @@ def analyze_traffic_by_url_for_range(self, start_time: str, end_time: str) -> Li
         SELECT
             url,
             COUNT(*) as requests,
-            SUM(bytes_sent) as bytes_sent,
+            SUM(response_size) as bytes_sent,
             COUNT(DISTINCT ip) as unique_ips,
             AVG(response_time) as avg_response_time
         FROM log_entries
         WHERE timestamp >= %s AND timestamp <= %s
         GROUP BY url
-        ORDER BY SUM(bytes_sent) DESC
+        ORDER BY SUM(response_size) DESC
         LIMIT 50
     """, (start_time, end_time))
 
@@ -147,7 +147,7 @@ def analyze_hourly_traffic_for_range(self, start_time: str, end_time: str) -> Di
         SELECT
             EXTRACT(HOUR FROM timestamp) as hour,
             COUNT(*) as requests,
-            SUM(bytes_sent) as bytes_sent,
+            SUM(response_size) as bytes_sent,
             COUNT(DISTINCT ip) as unique_ips
         FROM log_entries
         WHERE timestamp >= %s AND timestamp <= %s
