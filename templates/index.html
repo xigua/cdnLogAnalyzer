@@ -49,6 +49,10 @@
                         class="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 focus:ring-2 focus:ring-blue-500 focus:ring-offset-2">
                     📊 Analyze Logs
                 </button>
+                <button onclick="showCachedBlacklist()"
+                        class="px-6 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 focus:ring-2 focus:ring-red-500 focus:ring-offset-2">
+                    🚫 Show IP Blacklist
+                </button>
             </div>
         </div>
 
@@ -138,6 +142,56 @@
                     <button onclick="closeAnalyzeDialog()"
                             class="px-6 py-2 bg-gray-300 text-gray-700 rounded-lg hover:bg-gray-400">
                         Cancel
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Blacklist Dialog -->
+        <div id="blacklistModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
+            <div class="bg-white rounded-lg shadow-xl p-8 max-w-4xl w-full mx-4 h-screen overflow-hidden flex flex-col">
+                <h2 class="text-2xl font-semibold mb-4">IP Blacklist Generator</h2>
+
+                <!-- Statistics Summary -->
+                <div id="blacklistStats" class="grid grid-cols-3 gap-4 mb-4 p-4 bg-gray-50 rounded-lg">
+                    <div class="text-center">
+                        <div class="text-2xl font-bold text-blue-600" id="blacklistTotal">-</div>
+                        <div class="text-sm text-gray-600">Total Entries</div>
+                    </div>
+                    <div class="text-center">
+                        <div class="text-2xl font-bold text-green-600" id="blacklistOriginal">-</div>
+                        <div class="text-sm text-gray-600">Original IPs</div>
+                    </div>
+                    <div class="text-center">
+                        <div class="text-2xl font-bold text-purple-600" id="blacklistOptimized">-</div>
+                        <div class="text-sm text-gray-600">CIDR Blocks</div>
+                    </div>
+                </div>
+
+                <div class="text-sm text-gray-600 mb-4">
+                    <p>These IP addresses/ranges only access static files and never make API calls.</p>
+                    <p class="mt-1">C-class subnets with 4+ IPs are converted to /24 CIDR blocks for efficiency.</p>
+                </div>
+
+                <!-- IP List -->
+                <div class="flex-1 overflow-hidden flex flex-col">
+                    <div class="flex justify-between items-center mb-2">
+                        <label class="text-sm font-medium text-gray-700">IP Blacklist:</label>
+                        <button onclick="copyBlacklistToClipboard()"
+                                id="copyBlacklistBtn"
+                                class="px-4 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 focus:ring-2 focus:ring-blue-500">
+                            📋 Copy to Clipboard
+                        </button>
+                    </div>
+                    <textarea id="blacklistContent"
+                              class="flex-1 w-full px-4 py-2 border border-gray-300 rounded-lg font-mono text-sm resize-none focus:ring-2 focus:ring-blue-500"
+                              readonly></textarea>
+                </div>
+
+                <div class="flex gap-4 mt-6">
+                    <button onclick="closeBlacklistDialog()"
+                            class="flex-1 px-6 py-2 bg-gray-300 text-gray-700 rounded-lg hover:bg-gray-400">
+                        Close
                     </button>
                 </div>
             </div>
@@ -270,9 +324,9 @@
                 <div>
                     <div class="flex justify-between items-center mb-3">
                         <h4 class="text-lg font-medium text-red-700">Top Static-Only IPs (Suspicious)</h4>
-                        <button onclick="copyStaticIPsToClipboard()"
+                        <button onclick="showBlacklistDialog()"
                                 class="px-4 py-2 bg-red-600 text-white text-sm rounded-lg hover:bg-red-700 focus:ring-2 focus:ring-red-500 focus:ring-offset-2">
-                            📋 Copy IPs to Blacklist
+                            🚫 Generate IP Blacklist
                         </button>
                     </div>
                     <div class="overflow-x-auto">
@@ -403,7 +457,36 @@
             document.getElementById('loadingIndicator').classList.add('hidden');
         }
 
-        function showAnalyzeDialog() {
+        async function showAnalyzeDialog() {
+            // Check if cached analysis exists
+            try {
+                const response = await fetch('/api/analysis-cache');
+                const data = await response.json();
+
+                if (response.ok && data.results) {
+                    const cacheTime = new Date(data.created_at).toLocaleString();
+                    const startTime = data.start_time ? new Date(data.start_time).toLocaleString() : 'N/A';
+                    const endTime = data.end_time ? new Date(data.end_time).toLocaleString() : 'N/A';
+
+                    const confirmed = confirm(
+                        `Cached analysis results found (generated at ${cacheTime}).\n\n` +
+                        `Time range: ${startTime} to ${endTime}\n\n` +
+                        `Clicking OK will delete the cached results and regenerate the analysis.\n\n` +
+                        `Click Cancel to keep using the cached results.`
+                    );
+
+                    if (!confirmed) {
+                        return; // User chose to keep cached results
+                    }
+
+                    // User confirmed - delete cache
+                    await fetch('/api/analysis-cache', { method: 'DELETE' });
+                }
+            } catch (error) {
+                console.error('Error checking cache:', error);
+                // Continue to show dialog even if cache check fails
+            }
+
             document.getElementById('analyzeModal').classList.remove('hidden');
             document.getElementById('analyzeModal').classList.add('flex');
 
@@ -1019,16 +1102,21 @@
 
         // Global variable to store static-only IPs for blacklisting
         let staticOnlyIPList = [];
+        let blacklistData = null;
 
-        async function copyStaticIPsToClipboard() {
-            const button = event.target;
-            const originalText = button.innerHTML;
+        function showBlacklistDialog() {
+            document.getElementById('blacklistModal').classList.remove('hidden');
+            document.getElementById('blacklistModal').classList.add('flex');
+            loadBlacklistData();
+        }
 
+        function closeBlacklistDialog() {
+            document.getElementById('blacklistModal').classList.add('hidden');
+            document.getElementById('blacklistModal').classList.remove('flex');
+        }
+
+        async function loadBlacklistData() {
             try {
-                // Show loading state
-                button.innerHTML = '⏳ Loading...';
-                button.disabled = true;
-
                 // Fetch all static-only IPs from the server
                 const response = await fetch('/api/static-only-ips');
                 const data = await response.json();
@@ -1037,76 +1125,104 @@
                     throw new Error(data.error || 'Failed to fetch static-only IPs');
                 }
 
+                blacklistData = data;
                 const staticIPs = data.static_only_ips;
 
                 if (!staticIPs || staticIPs.length === 0) {
                     alert('No static-only IPs found. All IPs are accessing dynamic content.');
+                    closeBlacklistDialog();
                     return;
                 }
 
-                // IPs are already sorted by the server
+                // Update statistics
+                const originalCount = data.original_count || staticIPs.length;
+                const cidrCount = staticIPs.filter(ip => ip.includes('/24')).length;
+
+                document.getElementById('blacklistTotal').textContent = staticIPs.length.toLocaleString();
+                document.getElementById('blacklistOriginal').textContent = originalCount.toLocaleString();
+                document.getElementById('blacklistOptimized').textContent = cidrCount.toLocaleString();
+
+                // Display IP list
                 const ipListText = staticIPs.join('\n');
+                document.getElementById('blacklistContent').value = ipListText;
+
+            } catch (error) {
+                alert('Error fetching static-only IPs: ' + error.message);
+                closeBlacklistDialog();
+            }
+        }
+
+        async function copyBlacklistToClipboard() {
+            const button = document.getElementById('copyBlacklistBtn');
+            const originalText = button.innerHTML;
+
+            try {
+                const ipListText = document.getElementById('blacklistContent').value;
+
+                if (!ipListText) {
+                    alert('No IPs to copy');
+                    return;
+                }
 
                 // Copy to clipboard
                 await navigator.clipboard.writeText(ipListText);
 
                 // Show success message
                 button.innerHTML = '✅ Copied!';
-                button.classList.remove('bg-red-600', 'hover:bg-red-700');
+                button.classList.remove('bg-blue-600', 'hover:bg-blue-700');
                 button.classList.add('bg-green-600', 'hover:bg-green-700');
 
                 setTimeout(() => {
                     button.innerHTML = originalText;
                     button.classList.remove('bg-green-600', 'hover:bg-green-700');
-                    button.classList.add('bg-red-600', 'hover:bg-red-700');
-                    button.disabled = false;
+                    button.classList.add('bg-blue-600', 'hover:bg-blue-700');
                 }, 2000);
 
-                // Show success alert with count and optimization info
-                const originalCount = data.original_count || staticIPs.length;
-                const optimizationMessage = originalCount > staticIPs.length
-                    ? `\n\n🎯 Optimization: ${originalCount} individual IPs optimized to ${staticIPs.length} entries (C-class subnets with 4+ IPs converted to /24 CIDR blocks)`
-                    : '';
-
-                alert(`✅ Copied ${staticIPs.length} blacklist entries to clipboard!${optimizationMessage}\n\nThese IP addresses/ranges only access static files and never make API calls.`);
-
             } catch (error) {
-                // Handle errors
-                button.innerHTML = originalText;
-                button.disabled = false;
-
-                // Fallback: try to use the displayed IPs if API fails
-                if (staticOnlyIPList && staticOnlyIPList.length > 0) {
-                    const uniqueIPs = [...new Set(staticOnlyIPList.map(item => item.ip))];
-                    uniqueIPs.sort((a, b) => {
-                        const aParts = a.split('.').map(num => parseInt(num, 10));
-                        const bParts = b.split('.').map(num => parseInt(num, 10));
-                        for (let i = 0; i < 4; i++) {
-                            if (aParts[i] !== bParts[i]) return aParts[i] - bParts[i];
-                        }
-                        return 0;
-                    });
-
-                    const ipListText = uniqueIPs.join('\n');
-
-                    // Try clipboard API, fallback to textarea
-                    try {
-                        await navigator.clipboard.writeText(ipListText);
-                        alert(`⚠️ Used displayed IPs only. Copied ${uniqueIPs.length} IP addresses to clipboard.`);
-                    } catch {
-                        const textArea = document.createElement('textarea');
-                        textArea.value = ipListText;
-                        document.body.appendChild(textArea);
-                        textArea.select();
-                        document.execCommand('copy');
-                        document.body.removeChild(textArea);
-                        alert(`⚠️ Used displayed IPs only. Copied ${uniqueIPs.length} IP addresses to clipboard.`);
-                    }
-                } else {
-                    alert('❌ Error: ' + error.message);
-                }
+                alert('Failed to copy to clipboard: ' + error.message);
             }
         }
+
+        async function showCachedBlacklist() {
+            try {
+                // Fetch cached blacklist from the server
+                const response = await fetch('/api/blacklist-cache');
+                const data = await response.json();
+
+                if (!response.ok || !data.blacklist_data) {
+                    alert('No cached blacklist found. Please analyze logs first.');
+                    return;
+                }
+
+                blacklistData = data.blacklist_data;
+                const staticIPs = data.blacklist_data.static_only_ips;
+
+                if (!staticIPs || staticIPs.length === 0) {
+                    alert('No static-only IPs found in cached blacklist.');
+                    return;
+                }
+
+                // Show the modal
+                document.getElementById('blacklistModal').classList.remove('hidden');
+                document.getElementById('blacklistModal').classList.add('flex');
+
+                // Update statistics
+                const originalCount = data.blacklist_data.original_count || staticIPs.length;
+                const cidrCount = staticIPs.filter(ip => ip.includes('/24')).length;
+
+                document.getElementById('blacklistTotal').textContent = staticIPs.length.toLocaleString();
+                document.getElementById('blacklistOriginal').textContent = originalCount.toLocaleString();
+                document.getElementById('blacklistOptimized').textContent = cidrCount.toLocaleString();
+
+                // Display IP list
+                const ipListText = staticIPs.join('\n');
+                document.getElementById('blacklistContent').value = ipListText;
+
+            } catch (error) {
+                alert('Error loading cached blacklist: ' + error.message);
+            }
+        }
+
 
         // Load database statistics on page load
         async function loadDbStats() {
@@ -1143,8 +1259,25 @@
             }
         }
 
-        // Load DB stats on page load
+        async function loadCachedAnalysis() {
+            try {
+                const response = await fetch('/api/analysis-cache');
+                const data = await response.json();
+
+                if (response.ok && data.results) {
+                    console.log('Cached analysis found, displaying results...');
+                    displayResults(data.results);
+                } else {
+                    console.log('No cached analysis results found');
+                }
+            } catch (error) {
+                console.error('Error loading cached analysis:', error);
+            }
+        }
+
+        // Load DB stats and cached analysis on page load
         loadDbStats();
+        loadCachedAnalysis();
 
         // Set default directory path
         document.getElementById('directoryPath').value = '/Users/xigua/Downloads/zhisai-logs';

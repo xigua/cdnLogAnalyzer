@@ -149,6 +149,26 @@ def init_db():
         )
     """)
 
+    # Create analysis results cache table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS analysis_cache (
+            id SERIAL PRIMARY KEY,
+            start_time TIMESTAMP WITH TIME ZONE,
+            end_time TIMESTAMP WITH TIME ZONE,
+            results JSONB NOT NULL,
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    # Create blacklist cache table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS blacklist_cache (
+            id SERIAL PRIMARY KEY,
+            blacklist_data JSONB NOT NULL,
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
     conn.commit()
     cursor.close()
     db_pool.putconn(conn)
@@ -1275,6 +1295,86 @@ def get_db_stats():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/analysis-cache', methods=['GET'])
+def get_analysis_cache():
+    """Get cached analysis results"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        cursor.execute("""
+            SELECT id, start_time, end_time, results, created_at
+            FROM analysis_cache
+            ORDER BY created_at DESC
+            LIMIT 1
+        """)
+
+        cache = cursor.fetchone()
+        cursor.close()
+        release_db_connection(conn)
+
+        if cache:
+            return jsonify({
+                'has_cache': True,
+                'cache_id': cache['id'],
+                'start_time': cache['start_time'].isoformat() if cache['start_time'] else None,
+                'end_time': cache['end_time'].isoformat() if cache['end_time'] else None,
+                'results': cache['results'],
+                'created_at': cache['created_at'].isoformat()
+            })
+        else:
+            return jsonify({'has_cache': False})
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/analysis-cache', methods=['DELETE'])
+def delete_analysis_cache():
+    """Delete cached analysis results"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("TRUNCATE TABLE analysis_cache")
+        conn.commit()
+        cursor.close()
+        release_db_connection(conn)
+
+        return jsonify({'status': 'success'})
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/blacklist-cache', methods=['GET'])
+def get_blacklist_cache():
+    """Get cached blacklist"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        cursor.execute("""
+            SELECT id, blacklist_data, created_at
+            FROM blacklist_cache
+            ORDER BY created_at DESC
+            LIMIT 1
+        """)
+
+        cache = cursor.fetchone()
+        cursor.close()
+        release_db_connection(conn)
+
+        if cache:
+            return jsonify({
+                'has_cache': True,
+                'blacklist_data': cache['blacklist_data'],
+                'created_at': cache['created_at'].isoformat()
+            })
+        else:
+            return jsonify({'has_cache': False})
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/api/analyze-range', methods=['POST'])
 def analyze_time_range():
     """Analyze logs within a specific time range with SSE progress"""
@@ -1283,10 +1383,12 @@ def analyze_time_range():
     data = request.json
     start_time = data.get('start_time')
     end_time = data.get('end_time')
+    force_refresh = data.get('force_refresh', False)
 
     print(f"\n=== Analyze Range Request ===")
     print(f"Start time: {start_time}")
     print(f"End time: {end_time}")
+    print(f"Force refresh: {force_refresh}")
     print(f"db_pool status: {db_pool}")
 
     if not start_time or not end_time:
@@ -1350,6 +1452,29 @@ def analyze_time_range():
             results['performance_stats'] = analyzer_instance.analyze_performance_for_range(start_time, end_time)
 
             print("Analysis complete!")
+
+            # Save results to cache
+            yield f"data: {json.dumps({'progress': 0.95, 'message': 'Saving results to cache...'}, cls=DecimalEncoder)}\n\n"
+            try:
+                cache_conn = get_db_connection()
+                cache_cursor = cache_conn.cursor()
+
+                # Clear old cache
+                cache_cursor.execute("TRUNCATE TABLE analysis_cache")
+
+                # Save new cache
+                cache_cursor.execute("""
+                    INSERT INTO analysis_cache (start_time, end_time, results)
+                    VALUES (%s, %s, %s)
+                """, (start_time if start_time else None, end_time if end_time else None, json.dumps(results, cls=DecimalEncoder)))
+
+                cache_conn.commit()
+                cache_cursor.close()
+                release_db_connection(cache_conn)
+                print("Results saved to cache")
+            except Exception as cache_error:
+                print(f"Warning: Failed to save cache: {cache_error}")
+
             yield f"data: {json.dumps({'status': 'completed', 'progress': 1.0, 'message': 'Analysis complete!', 'results': results, 'time_range': {'start': start_time, 'end': end_time}}, cls=DecimalEncoder)}\n\n"
 
         except Exception as e:
@@ -1667,11 +1792,34 @@ def get_static_only_ips():
 
         blacklist_entries.sort(key=sort_key)
 
-        return jsonify({
+        result_data = {
             'static_only_ips': blacklist_entries,
             'count': len(blacklist_entries),
             'original_count': len(static_only_ips)
-        })
+        }
+
+        # Save to blacklist cache
+        try:
+            cache_conn = get_db_connection()
+            cache_cursor = cache_conn.cursor()
+
+            # Clear old cache
+            cache_cursor.execute("TRUNCATE TABLE blacklist_cache")
+
+            # Save new cache
+            cache_cursor.execute("""
+                INSERT INTO blacklist_cache (blacklist_data)
+                VALUES (%s)
+            """, (json.dumps(result_data, cls=DecimalEncoder),))
+
+            cache_conn.commit()
+            cache_cursor.close()
+            release_db_connection(cache_conn)
+            print("Blacklist saved to cache")
+        except Exception as cache_error:
+            print(f"Warning: Failed to save blacklist cache: {cache_error}")
+
+        return jsonify(result_data)
 
     except Exception as e:
         return jsonify({'error': str(e)}), 500
