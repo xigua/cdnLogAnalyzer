@@ -202,11 +202,18 @@ class LogAnalyzer:
     def __init__(self):
         self.entries = []
         self.log_pattern = re.compile(
-            r'\[(\d{2}/\w{3}/\d{4}:\d{2}:\d{2}:\d{2} [+-]\d{4})\] '
-            r'(\d+\.\d+\.\d+\.\d+) - '
-            r'(\d+) "-" "([A-Z]+) ([^"]+)" '
-            r'(\d+) (\d+) (\d+) (\w+) '
-            r'"([^"]*)" "([^"]*)" (\d+\.\d+\.\d+\.\d+)'
+            r'\[([^\]]+)\] '  # timestamp
+            r'(\S+) - '  # IP address
+            r'(\d+) '  # response time
+            r'"([^"]*)" '  # method field (may be "-")
+            r'"([^"]+)" '  # method + URL combined
+            r'(\d+) '  # status code
+            r'(\d+) '  # request size
+            r'(\d+) '  # response size
+            r'(\S+) '  # cache status
+            r'"([^"]*)" '  # user agent
+            r'"([^"]*)" '  # content type
+            r'(\S+)'  # original IP
         )
         self.progress_callback = None
 
@@ -230,12 +237,18 @@ class LogAnalyzer:
         timestamp_str = match.group(1)
         timestamp = datetime.strptime(timestamp_str, '%d/%b/%Y:%H:%M:%S %z')
 
+        # Group 5 contains "METHOD URL", need to split
+        method_url = match.group(5)
+        parts = method_url.split(' ', 1)
+        method = parts[0] if len(parts) > 0 else ''
+        url = parts[1] if len(parts) > 1 else method_url
+
         return LogEntry(
             timestamp=timestamp,
             ip=match.group(2),
             response_time=int(match.group(3)),
-            method=match.group(4),
-            url=match.group(5),
+            method=method,
+            url=url,
             status_code=int(match.group(6)),
             request_size=int(match.group(7)),  # 请求字节数
             response_size=int(match.group(8)),  # 响应字节数 (流量)
@@ -294,13 +307,18 @@ class LogAnalyzer:
         start_time = time.time()
 
         conn = get_db_connection()
-        # Set statement timeout to 10 minutes
+        # Set statement timeout to 30 minutes for large datasets
         conn.set_session(autocommit=False)
         cursor = conn.cursor()
 
         try:
-            # Set statement timeout
-            cursor.execute("SET statement_timeout = '600000'")  # 10 minutes
+            # Set statement timeout to 30 minutes
+            cursor.execute("SET statement_timeout = '1800000'")  # 30 minutes
+
+            # First, get total log count
+            cursor.execute("SELECT COUNT(*) FROM log_entries")
+            total_logs = cursor.fetchone()[0]
+            print(f"Total logs in database: {total_logs:,}")
 
             # Clear existing IP statistics
             print("Truncating ip_statistics table...")
@@ -308,7 +326,8 @@ class LogAnalyzer:
             conn.commit()
 
             # Calculate IP statistics using optimized SQL aggregation with pre-computed is_dynamic
-            print("Calculating IP statistics (this may take a few minutes for large datasets)...")
+            print("Calculating IP statistics (this may take several minutes for large datasets)...")
+            print("Please wait... This query is processing millions of records grouped by IP address.")
             cursor.execute("""
                 INSERT INTO ip_statistics (
                     ip, total_requests, total_bytes_sent, unique_urls, unique_user_agents,
@@ -336,8 +355,14 @@ class LogAnalyzer:
             """)
 
             conn.commit()
+
+            # Get count of unique IPs processed
+            cursor.execute("SELECT COUNT(*) FROM ip_statistics")
+            ip_count = cursor.fetchone()[0]
+
             elapsed = time.time() - start_time
             print(f"IP statistics calculation completed in {elapsed:.2f} seconds")
+            print(f"Processed {ip_count:,} unique IP addresses from {total_logs:,} log entries")
 
         except Exception as e:
             print(f"Error calculating IP statistics: {e}")
@@ -852,8 +877,9 @@ class LogAnalyzer:
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
         # Get total traffic
-        cursor.execute("SELECT SUM(response_size) FROM log_entries")
-        total_traffic = cursor.fetchone()[0] or 0
+        cursor.execute("SELECT SUM(response_size) as total FROM log_entries")
+        result = cursor.fetchone()
+        total_traffic = result['total'] if result and result['total'] else 0
 
         # Get static-only IPs
         cursor.execute("""
@@ -1071,17 +1097,21 @@ def analyze_logs_with_progress():
         yield f"data: {json.dumps({'status': 'started', 'message': 'Starting analysis...'})}\n\n"
 
         try:
+            print(f"Starting log analysis for directory: {directory_path}")
             # Create analyzer instance for this request
             analyzer_instance = LogAnalyzer()
+            print("Analyzer instance created successfully")
 
             # Define progress callback that yields progress updates
             def progress_callback(data):
                 return f"data: {json.dumps(data)}\n\n"
 
             # Process directory with real-time progress updates
+            print(f"Scanning directory for .gz files: {directory_path}")
             gz_files = [f for f in os.listdir(directory_path) if f.endswith('.gz')]
             gz_files.sort()
             total_files = len(gz_files)
+            print(f"Found {total_files} .gz files to process")
             start_time = time.time()
             analyzer_instance.entries = []
 
@@ -1096,9 +1126,7 @@ def analyze_logs_with_progress():
             }
             yield progress_callback(initial_data)
 
-            # Batch processing buffer
-            batch_buffer = []
-            batch_size = 5000  # Increased batch size to reduce DB commits
+            # Process each file and commit individually
             total_lines_processed = 0
 
             for i, filename in enumerate(gz_files):
@@ -1116,38 +1144,24 @@ def analyze_logs_with_progress():
                 }
                 yield progress_callback(progress_data)
 
+                # Buffer for this file only
+                file_entries = []
+
                 with gzip.open(filepath, 'rt', encoding='utf-8', errors='ignore') as f:
                     line_count = 0
                     for line in f:
                         entry = analyzer_instance.parse_log_line(line)
                         if entry:
-                            batch_buffer.append(entry)
+                            file_entries.append(entry)
                         line_count += 1
                         total_lines_processed += 1
 
-                        # Insert batch when buffer is full
-                        if len(batch_buffer) >= batch_size:
-                            # Send DB insert progress
-                            progress_data = {
-                                'progress': min(((i + 0.5) / total_files) * 0.7, 0.7),
-                                'message': f'Inserting {len(batch_buffer)} entries to database...',
-                                'current_file_index': i + 1,
-                                'total_files': total_files,
-                                'current_file': filename,
-                                'estimated_remaining_seconds': analyzer_instance._calculate_remaining_time(i, total_files, start_time)
-                            }
-                            yield progress_callback(progress_data)
-
-                            analyzer_instance.insert_entries_to_db(batch_buffer)
-                            batch_buffer = []
-
-                        # Send progress every 5000 lines
-                        if line_count % 5000 == 0:
-                            # Mid-file progress: current file + 50% progress within current file
+                        # Send progress every 1000 lines
+                        if line_count % 1000 == 0:
                             file_progress = ((i + 0.5) / total_files) * 0.7 if total_files > 0 else 0.35
                             progress_data = {
-                                'progress': min(file_progress, 0.7),  # Cap at 70% for file processing
-                                'message': f'Processing file {i + 1} of {total_files} ({total_lines_processed:,} total lines)',
+                                'progress': min(file_progress, 0.7),
+                                'message': f'Processing file {i + 1} of {total_files} ({line_count:,} lines in current file)',
                                 'current_file_index': i + 1,
                                 'total_files': total_files,
                                 'current_file': filename,
@@ -1155,19 +1169,27 @@ def analyze_logs_with_progress():
                             }
                             yield progress_callback(progress_data)
 
-            # Insert remaining entries
-            if batch_buffer:
-                progress_data = {
-                    'progress': 0.7,
-                    'message': f'Inserting final {len(batch_buffer)} entries to database...',
-                    'current_file_index': total_files,
-                    'total_files': total_files,
-                    'current_file': '',
-                    'estimated_remaining_seconds': 5
-                }
-                yield progress_callback(progress_data)
-                analyzer_instance.insert_entries_to_db(batch_buffer)
-                batch_buffer = []
+                # Insert all entries from this file
+                if file_entries:
+                    try:
+                        progress_data = {
+                            'progress': ((i + 0.9) / total_files) * 0.7,
+                            'message': f'Inserting {len(file_entries)} entries from {filename}...',
+                            'current_file_index': i + 1,
+                            'total_files': total_files,
+                            'current_file': filename,
+                            'estimated_remaining_seconds': analyzer_instance._calculate_remaining_time(i, total_files, start_time)
+                        }
+                        yield progress_callback(progress_data)
+
+                        print(f"Inserting {len(file_entries)} entries from file {filename}")
+                        analyzer_instance.insert_entries_to_db(file_entries)
+                        print(f"File {filename} inserted successfully ({len(file_entries)} entries)")
+                    except Exception as file_error:
+                        print(f"ERROR inserting entries from file {filename}: {str(file_error)}")
+                        import traceback
+                        print(traceback.format_exc())
+                        raise
 
             # Send IP statistics calculation progress
             ip_stats_progress = {
@@ -1181,7 +1203,27 @@ def analyze_logs_with_progress():
             yield progress_callback(ip_stats_progress)
 
             # Calculate and store IP statistics
-            analyzer_instance.calculate_and_store_ip_statistics()
+            try:
+                print("Starting IP statistics calculation...")
+                analyzer_instance.calculate_and_store_ip_statistics()
+                print("IP statistics calculated successfully")
+            except Exception as stats_error:
+                print(f"ERROR calculating IP statistics: {str(stats_error)}")
+                import traceback
+                print(traceback.format_exc())
+                raise
+
+            # Send completion message - skip full analysis for large datasets during load
+            print("Log loading completed. Skipping full analysis for performance.")
+            print(f"Total lines processed: {total_lines_processed:,}")
+            completion_data = {
+                'status': 'completed',
+                'progress': 1.0,
+                'message': f'Log loading complete! Processed {total_lines_processed:,} lines from {total_files} files.',
+                'results': None
+            }
+            yield f"data: {json.dumps(completion_data)}\n\n"
+            return
 
             # Send analysis phase progress
             analysis_data = {
@@ -1250,9 +1292,14 @@ def analyze_logs_with_progress():
             yield f"data: {json.dumps(completion_data)}\n\n"
 
         except Exception as e:
+            import traceback
+            error_traceback = traceback.format_exc()
+            print(f"ERROR in analyze_logs_with_progress: {str(e)}")
+            print(f"Traceback:\n{error_traceback}")
             error_data = {
                 'status': 'error',
-                'message': f'Error: {str(e)}'
+                'message': f'Error: {str(e)}',
+                'traceback': error_traceback
             }
             yield f"data: {json.dumps(error_data)}\n\n"
 

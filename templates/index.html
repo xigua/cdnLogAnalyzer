@@ -680,6 +680,24 @@
 
                         alert('✅ Log files loaded successfully!');
                     }
+
+                    // Handle error status
+                    if (progressData.status === 'error') {
+                        currentEventSource.close();
+                        currentEventSource = null;
+                        clearInterval(progressInterval);
+                        progressInterval = null;
+                        loadingIndicator.classList.add('hidden');
+                        document.getElementById('loadButton').disabled = false;
+
+                        console.error('Error details:', progressData);
+                        let errorMsg = 'Error during processing:\n\n' + progressData.message;
+                        if (progressData.traceback) {
+                            console.error('Traceback:\n', progressData.traceback);
+                            errorMsg += '\n\nCheck browser console for detailed traceback.';
+                        }
+                        alert(errorMsg);
+                    }
                 };
 
                 currentEventSource.onerror = function(event) {
@@ -692,7 +710,9 @@
                         progressInterval = null;
                     }
                     loadingIndicator.classList.add('hidden');
-                    alert('Error during processing. Please try again.');
+                    document.getElementById('loadButton').disabled = false;
+                    console.error('EventSource error:', event);
+                    alert('Error during processing. Please check the server logs and browser console for details.');
                 };
 
             } catch (error) {
@@ -1240,14 +1260,28 @@
 
                 if (data.start_time) {
                     const startDate = new Date(data.start_time);
-                    document.getElementById('dbStartTime').textContent = startDate.toLocaleString();
+                    // Format date with local timezone
+                    const formatted = startDate.getFullYear() + '/' +
+                                     String(startDate.getMonth() + 1).padStart(2, '0') + '/' +
+                                     String(startDate.getDate()).padStart(2, '0') + ', ' +
+                                     String(startDate.getHours()).padStart(2, '0') + ':' +
+                                     String(startDate.getMinutes()).padStart(2, '0') + ':' +
+                                     String(startDate.getSeconds()).padStart(2, '0');
+                    document.getElementById('dbStartTime').textContent = formatted;
                 } else {
                     document.getElementById('dbStartTime').textContent = 'No data';
                 }
 
                 if (data.end_time) {
                     const endDate = new Date(data.end_time);
-                    document.getElementById('dbEndTime').textContent = endDate.toLocaleString();
+                    // Format date with local timezone
+                    const formatted = endDate.getFullYear() + '/' +
+                                     String(endDate.getMonth() + 1).padStart(2, '0') + '/' +
+                                     String(endDate.getDate()).padStart(2, '0') + ', ' +
+                                     String(endDate.getHours()).padStart(2, '0') + ':' +
+                                     String(endDate.getMinutes()).padStart(2, '0') + ':' +
+                                     String(endDate.getSeconds()).padStart(2, '0');
+                    document.getElementById('dbEndTime').textContent = formatted;
                 } else {
                     document.getElementById('dbEndTime').textContent = 'No data';
                 }
