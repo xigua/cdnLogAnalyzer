@@ -115,6 +115,7 @@ def init_db():
             ip VARCHAR(45) PRIMARY KEY,
             total_requests INTEGER NOT NULL,
             total_bytes_sent BIGINT NOT NULL,
+            total_response_size BIGINT NOT NULL,
             unique_urls INTEGER NOT NULL,
             unique_user_agents INTEGER NOT NULL,
             static_requests INTEGER NOT NULL,
@@ -1998,6 +1999,53 @@ def get_ip_logs(ip):
     except Exception as e:
         import traceback
         print(f"Error getting IP logs: {str(e)}")
+        print(traceback.format_exc())
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/ip-statistics', methods=['GET'])
+def get_ip_statistics():
+    """Get IP statistics by prefix"""
+    try:
+        prefix = request.args.get('prefix', '')
+        if not prefix:
+            return jsonify({'error': 'Prefix parameter is required'}), 400
+
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Query with LIKE pattern, excluding requests_per_minute and updated_at
+        cursor.execute("""
+            SELECT
+                ip,
+                total_requests,
+                total_bytes_sent,
+                total_response_size,
+                unique_urls,
+                unique_user_agents,
+                static_requests,
+                dynamic_requests,
+                is_static_only,
+                first_seen,
+                last_seen
+            FROM ip_statistics
+            WHERE ip LIKE %s
+            ORDER BY total_response_size DESC
+            LIMIT 100
+        """, (f"{prefix}%",))
+
+        statistics = cursor.fetchall()
+        cursor.close()
+        release_db_connection(conn)
+
+        return jsonify({
+            'prefix': prefix,
+            'count': len(statistics),
+            'statistics': [dict(stat) for stat in statistics]
+        })
+
+    except Exception as e:
+        import traceback
+        print(f"Error getting IP statistics: {str(e)}")
         print(traceback.format_exc())
         return jsonify({'error': str(e)}), 500
 

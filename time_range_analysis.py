@@ -35,7 +35,7 @@ def calculate_ip_statistics_for_range(self, start_time: str, end_time: str):
 
         cursor.execute("""
             INSERT INTO ip_statistics (
-                ip, total_requests, total_bytes_sent, unique_urls, unique_user_agents,
+                ip, total_requests, total_bytes_sent, total_response_size, unique_urls, unique_user_agents,
                 static_requests, dynamic_requests, is_static_only,
                 first_seen, last_seen, requests_per_minute
             )
@@ -43,6 +43,7 @@ def calculate_ip_statistics_for_range(self, start_time: str, end_time: str):
                 ip,
                 COUNT(*) as total_requests,
                 SUM(response_size) as total_bytes_sent,
+                SUM(response_size) as total_response_size,
                 COUNT(DISTINCT url) as unique_urls,
                 COUNT(DISTINCT user_agent) as unique_user_agents,
                 SUM(CASE WHEN is_dynamic = FALSE THEN 1 ELSE 0 END) as static_requests,

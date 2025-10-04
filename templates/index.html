@@ -57,6 +57,10 @@
                         class="px-6 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 focus:ring-2 focus:ring-purple-500 focus:ring-offset-2">
                     🔍 Deep Analysis
                 </button>
+                <button onclick="showIPStatistics()"
+                        class="px-6 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2">
+                    📊 Show IP Statistics
+                </button>
             </div>
         </div>
 
@@ -247,7 +251,7 @@
         </div>
 
         <!-- IP Detail Modal (separate popup) -->
-        <div id="ipDetailModal" class="fixed inset-0 bg-black bg-opacity-50" style="display: none; z-index: 100;">
+        <div id="ipDetailModal" class="fixed inset-0 bg-black bg-opacity-50" style="display: none; z-index: 110;">
             <div class="flex items-center justify-center min-h-screen p-4">
                 <div class="bg-white rounded-lg shadow-xl w-full max-w-5xl" style="max-height: 85vh; display: flex; flex-direction: column;">
                     <div class="flex justify-between items-center p-6 border-b">
@@ -266,6 +270,42 @@
 
                     <div class="p-6 border-t">
                         <button onclick="closeIPDetail()"
+                                class="px-6 py-2 bg-gray-300 text-gray-700 rounded-lg hover:bg-gray-400">
+                            Close
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- IP Statistics Modal -->
+        <div id="ipStatisticsModal" class="fixed inset-0 bg-black bg-opacity-50" style="display: none; z-index: 100;">
+            <div class="flex items-center justify-center min-h-screen p-4">
+                <div class="bg-white rounded-lg shadow-xl w-full max-w-6xl" style="max-height: 90vh; display: flex; flex-direction: column;">
+                    <div class="p-6 border-b">
+                        <h2 class="text-2xl font-semibold mb-4">IP Statistics Query</h2>
+                        <div class="flex gap-2">
+                            <input type="text" id="ipPrefixInput" placeholder="Enter IP prefix (e.g., 14.20.4.)"
+                                   class="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                                   onkeypress="if(event.key==='Enter') searchIPStatistics()">
+                            <button onclick="searchIPStatistics()"
+                                    class="px-6 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2">
+                                Search
+                            </button>
+                        </div>
+                    </div>
+
+                    <div id="ipStatisticsLoading" class="text-center py-8" style="display: none;">
+                        <div class="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600"></div>
+                        <span class="ml-2 text-gray-600">Loading...</span>
+                    </div>
+
+                    <div id="ipStatisticsContent" class="text-sm px-6 pt-2 pb-6" style="flex: 1; overflow: auto; min-height: 0;">
+                        <p class="text-gray-500 text-center py-8">Enter an IP prefix and click Search to view statistics</p>
+                    </div>
+
+                    <div class="p-6 border-t">
+                        <button onclick="closeIPStatistics()"
                                 class="px-6 py-2 bg-gray-300 text-gray-700 rounded-lg hover:bg-gray-400">
                             Close
                         </button>
@@ -1451,6 +1491,104 @@
         function closeIPDetail() {
             const modal = document.getElementById('ipDetailModal');
             modal.style.display = 'none';
+        }
+
+        function showIPStatistics() {
+            const modal = document.getElementById('ipStatisticsModal');
+            modal.style.display = 'block';
+            document.getElementById('ipPrefixInput').focus();
+        }
+
+        function closeIPStatistics() {
+            const modal = document.getElementById('ipStatisticsModal');
+            modal.style.display = 'none';
+            document.getElementById('ipStatisticsContent').innerHTML = '<p class="text-gray-500 text-center py-8">Enter an IP prefix and click Search to view statistics</p>';
+        }
+
+        async function searchIPStatistics() {
+            const prefix = document.getElementById('ipPrefixInput').value.trim();
+            if (!prefix) {
+                alert('Please enter an IP prefix');
+                return;
+            }
+
+            const loading = document.getElementById('ipStatisticsLoading');
+            const content = document.getElementById('ipStatisticsContent');
+
+            loading.style.display = 'block';
+            content.innerHTML = '';
+
+            try {
+                const response = await fetch(`/api/ip-statistics?prefix=${encodeURIComponent(prefix)}`);
+                const data = await response.json();
+
+                loading.style.display = 'none';
+
+                if (!response.ok) {
+                    throw new Error(data.error || 'Failed to fetch IP statistics');
+                }
+
+                if (!data.statistics || data.statistics.length === 0) {
+                    content.innerHTML = '<p class="text-gray-500 text-center py-8">No IPs found matching this prefix</p>';
+                    return;
+                }
+
+                // Create table
+                let html = `
+                    <div class="mb-4 text-sm text-gray-600">
+                        Found <span class="font-semibold">${data.statistics.length}</span> IP(s) matching prefix "<span class="font-mono font-semibold">${prefix}</span>"
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="min-w-full divide-y divide-gray-200">
+                            <thead class="bg-gray-50 sticky top-0">
+                                <tr>
+                                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">IP</th>
+                                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Total Requests</th>
+                                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Total Traffic</th>
+                                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Unique URLs</th>
+                                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Static Req</th>
+                                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Dynamic Req</th>
+                                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Type</th>
+                                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">First Seen</th>
+                                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Last Seen</th>
+                                </tr>
+                            </thead>
+                            <tbody class="bg-white divide-y divide-gray-200">
+                `;
+
+                for (const stat of data.statistics) {
+                    const trafficMB = (stat.total_response_size / (1024 * 1024)).toFixed(2);
+                    const typeClass = stat.is_static_only ? 'text-green-600' : 'text-orange-600';
+                    const typeText = stat.is_static_only ? 'Static Only' : 'Mixed';
+                    const firstSeen = new Date(stat.first_seen).toLocaleString();
+                    const lastSeen = new Date(stat.last_seen).toLocaleString();
+
+                    html += `
+                        <tr class="hover:bg-gray-50">
+                            <td class="px-3 py-2 whitespace-nowrap text-sm font-mono text-blue-600 cursor-pointer hover:underline" onclick="showIPDetail('${stat.ip}')">${stat.ip}</td>
+                            <td class="px-3 py-2 whitespace-nowrap text-sm text-gray-900">${stat.total_requests.toLocaleString()}</td>
+                            <td class="px-3 py-2 whitespace-nowrap text-sm text-gray-900">${trafficMB} MB</td>
+                            <td class="px-3 py-2 whitespace-nowrap text-sm text-gray-900">${stat.unique_urls}</td>
+                            <td class="px-3 py-2 whitespace-nowrap text-sm text-gray-900">${stat.static_requests}</td>
+                            <td class="px-3 py-2 whitespace-nowrap text-sm text-gray-900">${stat.dynamic_requests}</td>
+                            <td class="px-3 py-2 whitespace-nowrap text-sm font-medium ${typeClass}">${typeText}</td>
+                            <td class="px-3 py-2 whitespace-nowrap text-sm text-gray-600">${firstSeen}</td>
+                            <td class="px-3 py-2 whitespace-nowrap text-sm text-gray-600">${lastSeen}</td>
+                        </tr>
+                    `;
+                }
+
+                html += `
+                            </tbody>
+                        </table>
+                    </div>
+                `;
+                content.innerHTML = html;
+
+            } catch (error) {
+                loading.style.display = 'none';
+                content.innerHTML = `<p class="text-red-500 text-center py-8">Error: ${error.message}</p>`;
+            }
         }
 
         async function showCachedBlacklist() {
