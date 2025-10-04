@@ -53,6 +53,10 @@
                         class="px-6 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 focus:ring-2 focus:ring-red-500 focus:ring-offset-2">
                     🚫 Show IP Blacklist
                 </button>
+                <button onclick="showDeepAnalysis()"
+                        class="px-6 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 focus:ring-2 focus:ring-purple-500 focus:ring-offset-2">
+                    🔍 Deep Analysis
+                </button>
             </div>
         </div>
 
@@ -193,6 +197,79 @@
                             class="flex-1 px-6 py-2 bg-gray-300 text-gray-700 rounded-lg hover:bg-gray-400">
                         Close
                     </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Deep Analysis Dialog -->
+        <div id="deepAnalysisModal" class="fixed inset-0 bg-black bg-opacity-50 hidden z-50" style="display: none;">
+            <div class="flex items-center justify-center min-h-screen p-4">
+                <div class="bg-white rounded-lg shadow-xl w-full max-w-7xl" style="max-height: 90vh; display: flex; flex-direction: column;">
+                    <div class="p-6 border-b">
+                        <h2 class="text-2xl font-semibold mb-2">Deep Analysis: C-Class Subnet Breakdown</h2>
+                        <p class="text-sm text-gray-600">
+                            This shows C-class subnets with 4+ static-only IPs that are <strong>NOT</strong> converted to /24 blocks.
+                            These subnets have at least one IP accessing dynamic content (shown in red), preventing /24 conversion.
+                            Click on any IP to view its detailed access logs and verify if it's legitimate or should be blocked.
+                        </p>
+                    </div>
+
+                    <!-- Loading indicator -->
+                    <div id="deepAnalysisLoading" class="text-center py-8 hidden">
+                        <div class="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-purple-600"></div>
+                        <span class="ml-2 text-gray-600">Analyzing subnets...</span>
+                    </div>
+
+                    <!-- Results table -->
+                    <div id="deepAnalysisResults" class="hidden" style="flex: 1; overflow: auto; min-height: 0;">
+                        <table class="w-full text-sm">
+                            <thead class="bg-gray-100 sticky top-0">
+                                <tr>
+                                    <th class="px-4 py-2 text-left">C-Class Subnet<br><span class="text-xs font-normal text-gray-600">(Static-only Count)</span></th>
+                                    <th class="px-4 py-2 text-left">Static-Only IPs</th>
+                                    <th class="px-4 py-2 text-left">Mixed IPs (Access Dynamic Content)</th>
+                                </tr>
+                            </thead>
+                            <tbody id="deepAnalysisTableBody">
+                                <!-- Will be populated by JavaScript -->
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <div class="p-6 border-t">
+                        <button onclick="closeDeepAnalysis()"
+                                class="px-6 py-2 bg-gray-300 text-gray-700 rounded-lg hover:bg-gray-400">
+                            Close
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- IP Detail Modal (separate popup) -->
+        <div id="ipDetailModal" class="fixed inset-0 bg-black bg-opacity-50" style="display: none; z-index: 100;">
+            <div class="flex items-center justify-center min-h-screen p-4">
+                <div class="bg-white rounded-lg shadow-xl w-full max-w-5xl" style="max-height: 85vh; display: flex; flex-direction: column;">
+                    <div class="flex justify-between items-center p-6 border-b">
+                        <h3 class="text-xl font-semibold" id="ipDetailTitle">IP Details</h3>
+                        <button onclick="closeIPDetail()" class="text-gray-500 hover:text-gray-700 text-3xl leading-none">&times;</button>
+                    </div>
+
+                    <div id="ipDetailLoading" class="text-center py-8" style="display: none;">
+                        <div class="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-purple-600"></div>
+                        <span class="ml-2 text-gray-600">Loading...</span>
+                    </div>
+
+                    <div id="ipDetailContent" class="text-sm px-6 pt-2 pb-6" style="flex: 1; overflow: auto; min-height: 0;">
+                        <!-- Will be populated by JavaScript -->
+                    </div>
+
+                    <div class="p-6 border-t">
+                        <button onclick="closeIPDetail()"
+                                class="px-6 py-2 bg-gray-300 text-gray-700 rounded-lg hover:bg-gray-400">
+                            Close
+                        </button>
+                    </div>
                 </div>
             </div>
         </div>
@@ -774,6 +851,9 @@
         }
 
         function displayResults(data) {
+            // Show results container
+            document.getElementById('resultsContainer').classList.remove('hidden');
+
             // Update basic statistics
             document.getElementById('totalRequests').textContent = data.basic_stats.total_requests.toLocaleString();
             document.getElementById('uniqueIPs').textContent = data.basic_stats.unique_ips.toLocaleString();
@@ -1201,6 +1281,176 @@
             } catch (error) {
                 alert('Failed to copy to clipboard: ' + error.message);
             }
+        }
+
+        async function showDeepAnalysis() {
+            // Show modal
+            const modal = document.getElementById('deepAnalysisModal');
+            modal.style.display = 'block';
+            modal.classList.remove('hidden');
+            document.getElementById('deepAnalysisLoading').classList.remove('hidden');
+            document.getElementById('deepAnalysisResults').classList.add('hidden');
+
+            try {
+                const response = await fetch('/api/deep-analysis');
+                const data = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(data.error || 'Failed to fetch deep analysis');
+                }
+
+                // Hide loading, show results
+                document.getElementById('deepAnalysisLoading').classList.add('hidden');
+                document.getElementById('deepAnalysisResults').classList.remove('hidden');
+
+                // Populate table
+                const tbody = document.getElementById('deepAnalysisTableBody');
+                tbody.innerHTML = '';
+
+                if (!data.subnets || data.subnets.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="3" class="px-4 py-8 text-center text-gray-500">No data available</td></tr>';
+                    return;
+                }
+
+                for (const subnet of data.subnets) {
+                    const row = document.createElement('tr');
+                    row.className = 'border-b hover:bg-gray-50';
+
+                    // Column 1: Subnet and count
+                    const subnetCell = document.createElement('td');
+                    subnetCell.className = 'px-4 py-3';
+                    subnetCell.innerHTML = `
+                        <div class="font-semibold text-blue-600">${subnet.subnet}.0/24</div>
+                        <div class="text-xs text-gray-600">${subnet.static_only_count} static-only IPs</div>
+                    `;
+                    row.appendChild(subnetCell);
+
+                    // Column 2: Static-only IPs (clickable)
+                    const staticCell = document.createElement('td');
+                    staticCell.className = 'px-4 py-3';
+                    const staticIpLinks = subnet.static_only_ips.map(ip =>
+                        `<span class="cursor-pointer text-blue-600 hover:underline" onclick="showIPDetail('${ip}')">${ip}</span>`
+                    ).join(', ');
+                    staticCell.innerHTML = `<div class="text-xs font-mono">${staticIpLinks}</div>`;
+                    row.appendChild(staticCell);
+
+                    // Column 3: Mixed IPs (clickable)
+                    const mixedCell = document.createElement('td');
+                    mixedCell.className = 'px-4 py-3';
+                    if (subnet.mixed_count > 0) {
+                        const mixedIpLinks = subnet.mixed_ips.map(ip =>
+                            `<span class="cursor-pointer text-red-600 hover:underline" onclick="showIPDetail('${ip}')">${ip}</span>`
+                        ).join(', ');
+                        mixedCell.innerHTML = `
+                            <div class="text-xs font-mono">${mixedIpLinks}</div>
+                            <div class="text-xs text-gray-500 mt-1">${subnet.mixed_count} IP(s) accessing dynamic content</div>
+                        `;
+                    } else {
+                        mixedCell.innerHTML = '<div class="text-xs text-green-600">None (should be /24)</div>';
+                    }
+                    row.appendChild(mixedCell);
+
+                    tbody.appendChild(row);
+                }
+
+            } catch (error) {
+                document.getElementById('deepAnalysisLoading').classList.add('hidden');
+                alert('Error loading deep analysis: ' + error.message);
+                closeDeepAnalysis();
+            }
+        }
+
+        function closeDeepAnalysis() {
+            const modal = document.getElementById('deepAnalysisModal');
+            modal.style.display = 'none';
+            modal.classList.add('hidden');
+        }
+
+        async function showIPDetail(ip) {
+            const modal = document.getElementById('ipDetailModal');
+            const title = document.getElementById('ipDetailTitle');
+            const loading = document.getElementById('ipDetailLoading');
+            const content = document.getElementById('ipDetailContent');
+
+            // Show modal and loading
+            modal.style.display = 'block';
+            loading.style.display = 'block';
+            content.innerHTML = '';
+            title.textContent = `IP: ${ip}`;
+
+            try {
+                const response = await fetch(`/api/ip-logs/${encodeURIComponent(ip)}`);
+                const data = await response.json();
+
+                loading.style.display = 'none';
+
+                if (!response.ok) {
+                    throw new Error(data.error || 'Failed to fetch IP logs');
+                }
+
+                if (!data.logs || data.logs.length === 0) {
+                    content.innerHTML = '<p class="text-gray-500 text-center py-4">No logs found for this IP</p>';
+                    return;
+                }
+
+                // Create log entries using table format (matching main page IP analysis)
+                const totalTrafficMB = (data.logs.reduce((sum, log) => sum + log.response_size, 0) / (1024 * 1024)).toFixed(2);
+
+                let html = `
+                    <div class="mb-4 text-sm text-gray-600">
+                        <span class="font-semibold">${data.total_requests}</span> requests found,
+                        total traffic: <span class="font-semibold">${totalTrafficMB} MB</span>,
+                        sorted by time (oldest first)
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="min-w-full divide-y divide-gray-200">
+                            <thead class="bg-gray-50 sticky top-0">
+                                <tr>
+                                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Time</th>
+                                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Method</th>
+                                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">URL</th>
+                                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Response Time</th>
+                                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Response Size</th>
+                                </tr>
+                            </thead>
+                            <tbody class="bg-white divide-y divide-gray-200">
+                `;
+
+                for (const log of data.logs) {
+                    const timestamp = new Date(log.timestamp);
+                    const formattedTime = `${timestamp.getMonth()+1}/${timestamp.getDate()}/${timestamp.getFullYear()}, ${String(timestamp.getHours()).padStart(2,'0')}:${String(timestamp.getMinutes()).padStart(2,'0')}:${String(timestamp.getSeconds()).padStart(2,'0')} ${timestamp.getHours() >= 12 ? 'PM' : 'AM'}`;
+                    const statusClass = log.status_code === 200 ? 'text-green-600' : 'text-red-600';
+                    const sizeKB = (log.response_size / 1024).toFixed(2);
+
+                    html += `
+                        <tr class="hover:bg-gray-50">
+                            <td class="px-3 py-2 whitespace-nowrap text-sm text-gray-900">${formattedTime}</td>
+                            <td class="px-3 py-2 whitespace-nowrap text-sm text-gray-900">${log.method}</td>
+                            <td class="px-3 py-2 text-sm text-blue-600 hover:underline" style="max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${log.url}">${log.url}</td>
+                            <td class="px-3 py-2 whitespace-nowrap text-sm font-medium ${statusClass}">${log.status_code}</td>
+                            <td class="px-3 py-2 whitespace-nowrap text-sm text-gray-900">${log.response_time}ms</td>
+                            <td class="px-3 py-2 whitespace-nowrap text-sm text-gray-900">${sizeKB} KB</td>
+                        </tr>
+                    `;
+                }
+
+                html += `
+                            </tbody>
+                        </table>
+                    </div>
+                `;
+                content.innerHTML = html;
+
+            } catch (error) {
+                loading.style.display = 'none';
+                content.innerHTML = `<p class="text-red-500 text-center py-4">Error: ${error.message}</p>`;
+            }
+        }
+
+        function closeIPDetail() {
+            const modal = document.getElementById('ipDetailModal');
+            modal.style.display = 'none';
         }
 
         async function showCachedBlacklist() {

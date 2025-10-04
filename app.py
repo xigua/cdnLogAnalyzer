@@ -1871,6 +1871,136 @@ def get_static_only_ips():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/deep-analysis', methods=['GET'])
+def deep_analysis():
+    """Deep analysis of C-class subnets to understand why some aren't converted to /24"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Get all IPs and their behavior (static_only or mixed)
+        cursor.execute("""
+            SELECT
+                ip,
+                is_static_only,
+                static_requests,
+                dynamic_requests,
+                total_requests
+            FROM ip_statistics
+            ORDER BY ip
+        """)
+
+        all_ips = cursor.fetchall()
+        cursor.close()
+        release_db_connection(conn)
+
+        # Group by C-class subnet
+        subnet_analysis = {}
+
+        for ip_data in all_ips:
+            ip = ip_data['ip']
+            parts = ip.split('.')
+            if len(parts) != 4:
+                continue
+
+            subnet = f"{parts[0]}.{parts[1]}.{parts[2]}"
+
+            if subnet not in subnet_analysis:
+                subnet_analysis[subnet] = {
+                    'subnet': subnet,
+                    'static_only_ips': [],
+                    'mixed_ips': []
+                }
+
+            if ip_data['is_static_only']:
+                subnet_analysis[subnet]['static_only_ips'].append(ip)
+            else:
+                subnet_analysis[subnet]['mixed_ips'].append(ip)
+
+        # Filter: only show subnets that have >= 4 static-only IPs AND have at least 1 mixed IP
+        # (These are subnets that could potentially be /24 but aren't because some IPs access dynamic content)
+        result = []
+        for subnet, data in subnet_analysis.items():
+            static_count = len(data['static_only_ips'])
+            mixed_count = len(data['mixed_ips'])
+
+            # Only include if:
+            # 1. Has 4+ static-only IPs (meets threshold for /24 conversion)
+            # 2. Has at least 1 mixed IP (reason why it's NOT converted to /24)
+            if static_count >= 4 and mixed_count > 0:
+                result.append({
+                    'subnet': subnet,
+                    'static_only_count': static_count,
+                    'static_only_ips': sorted(data['static_only_ips'], key=lambda x: tuple(int(p) for p in x.split('.'))),
+                    'mixed_ips': sorted(data['mixed_ips'], key=lambda x: tuple(int(p) for p in x.split('.'))),
+                    'mixed_count': mixed_count
+                })
+
+        # Sort by static_only_count descending (show most problematic subnets first)
+        result.sort(key=lambda x: x['static_only_count'], reverse=True)
+
+        return jsonify({
+            'subnets': result,
+            'total_subnets': len(result)
+        })
+
+    except Exception as e:
+        import traceback
+        print(f"Error in deep analysis: {str(e)}")
+        print(traceback.format_exc())
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/ip-logs/<ip>', methods=['GET'])
+def get_ip_logs(ip):
+    """Get all log entries for a specific IP address"""
+    try:
+        limit = request.args.get('limit', 100, type=int)  # Default to 100 logs
+
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Get total count
+        cursor.execute("""
+            SELECT COUNT(*) as total
+            FROM log_entries
+            WHERE ip = %s
+        """, (ip,))
+        total_count = cursor.fetchone()['total']
+
+        # Get log entries (most recent first)
+        cursor.execute("""
+            SELECT
+                timestamp,
+                method,
+                url,
+                status_code,
+                response_time,
+                response_size,
+                is_dynamic,
+                cache_status,
+                user_agent
+            FROM log_entries
+            WHERE ip = %s
+            ORDER BY timestamp DESC
+            LIMIT %s
+        """, (ip, limit))
+
+        logs = cursor.fetchall()
+        cursor.close()
+        release_db_connection(conn)
+
+        return jsonify({
+            'ip': ip,
+            'total_requests': total_count,
+            'logs': [dict(log) for log in logs]
+        })
+
+    except Exception as e:
+        import traceback
+        print(f"Error getting IP logs: {str(e)}")
+        print(traceback.format_exc())
+        return jsonify({'error': str(e)}), 500
+
 if __name__ == '__main__':
     # Initialize database
     init_db()
