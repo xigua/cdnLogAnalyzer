@@ -1419,12 +1419,18 @@
             title.textContent = `IP: ${ip}`;
 
             try {
-                const response = await fetch(`/api/ip-logs/${encodeURIComponent(ip)}`);
-                const data = await response.json();
+                // Fetch both IP logs and geo location in parallel
+                const [logsResponse, geoResponse] = await Promise.all([
+                    fetch(`/api/ip-logs/${encodeURIComponent(ip)}`),
+                    fetch(`/api/geo-location-by-ip?ip=${encodeURIComponent(ip)}`)
+                ]);
+
+                const data = await logsResponse.json();
+                const geoData = await geoResponse.json();
 
                 loading.style.display = 'none';
 
-                if (!response.ok) {
+                if (!logsResponse.ok) {
                     throw new Error(data.error || 'Failed to fetch IP logs');
                 }
 
@@ -1433,10 +1439,30 @@
                     return;
                 }
 
+                // Create geo location info section
+                let geoHtml = '';
+                if (geoResponse.ok && !geoData.error) {
+                    geoHtml = `
+                        <div class="mb-4 p-3 bg-blue-50 rounded-lg">
+                            <h3 class="text-sm font-semibold text-gray-700 mb-2">Geo Location (C-Class: ${geoData.c_class_subnet})</h3>
+                            <div class="grid grid-cols-2 gap-2 text-sm">
+                                <div><span class="font-medium">Country:</span> ${geoData.country || 'N/A'}</div>
+                                <div><span class="font-medium">Region:</span> ${geoData.region || 'N/A'}</div>
+                                <div><span class="font-medium">City:</span> ${geoData.city || 'N/A'}</div>
+                                <div><span class="font-medium">ISP:</span> ${geoData.isp || 'N/A'}</div>
+                                <div class="col-span-2"><span class="font-medium">Org:</span> ${geoData.org || 'N/A'}</div>
+                                <div class="col-span-2"><span class="font-medium">AS:</span> ${geoData.as_info || 'N/A'}</div>
+                            </div>
+                            ${geoData.cached ? '<div class="text-xs text-gray-500 mt-2">Cached from database</div>' : '<div class="text-xs text-green-600 mt-2">Freshly fetched and cached</div>'}
+                        </div>
+                    `;
+                }
+
                 // Create log entries using table format (matching main page IP analysis)
                 const totalTrafficMB = (data.logs.reduce((sum, log) => sum + log.response_size, 0) / (1024 * 1024)).toFixed(2);
 
                 let html = `
+                    ${geoHtml}
                     <div class="mb-4 text-sm text-gray-600">
                         <span class="font-semibold">${data.total_requests}</span> requests found,
                         total traffic: <span class="font-semibold">${totalTrafficMB} MB</span>,

@@ -2049,6 +2049,104 @@ def get_ip_statistics():
         print(traceback.format_exc())
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/geo-location-by-ip', methods=['GET'])
+def get_geo_location_by_ip():
+    """Get geo location for an IP address using C-class subnet lookup"""
+    ip = request.args.get('ip', '')
+
+    if not ip:
+        return jsonify({'error': 'IP address is required'}), 400
+
+    # Convert IP to C-class subnet
+    parts = ip.split('.')
+    if len(parts) < 3:
+        return jsonify({'error': 'Invalid IP address format'}), 400
+
+    c_class = f"{parts[0]}.{parts[1]}.{parts[2]}"
+
+    conn = get_db_connection()
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+    try:
+        # Check if C-class subnet exists in geo_location table
+        cursor.execute("""
+            SELECT c_class_subnet, country, region, city, isp, org, as_info, last_updated
+            FROM geo_location
+            WHERE c_class_subnet = %s
+        """, (c_class,))
+
+        result = cursor.fetchone()
+
+        if result:
+            return jsonify({
+                'ip': ip,
+                'c_class_subnet': result['c_class_subnet'],
+                'country': result['country'],
+                'region': result['region'],
+                'city': result['city'],
+                'isp': result['isp'],
+                'org': result['org'],
+                'as_info': result['as_info'],
+                'last_updated': result['last_updated'].isoformat() if result['last_updated'] else None,
+                'cached': True
+            })
+        else:
+            # Not found in database, fetch from external API
+            import urllib.request
+
+            try:
+                url = f'http://ip-api.com/json/{ip}'
+                with urllib.request.urlopen(url, timeout=5) as response:
+                    data = json.loads(response.read().decode())
+
+                    if data.get('status') == 'fail':
+                        return jsonify({'error': data.get('message', 'Failed to fetch geo location')}), 500
+
+                    # Combine AS info
+                    as_info = f"{data.get('as', '')} {data.get('asname', '')}".strip()
+
+                    # Insert into geo_location table with C-class subnet
+                    cursor.execute("""
+                        INSERT INTO geo_location (c_class_subnet, country, region, city, isp, org, as_info)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (c_class_subnet) DO UPDATE SET
+                            country = EXCLUDED.country,
+                            region = EXCLUDED.region,
+                            city = EXCLUDED.city,
+                            isp = EXCLUDED.isp,
+                            org = EXCLUDED.org,
+                            as_info = EXCLUDED.as_info,
+                            last_updated = CURRENT_TIMESTAMP
+                    """, (
+                        c_class,
+                        data.get('country', ''),
+                        data.get('regionName', ''),
+                        data.get('city', ''),
+                        data.get('isp', ''),
+                        data.get('org', ''),
+                        as_info
+                    ))
+                    conn.commit()
+
+                    return jsonify({
+                        'ip': ip,
+                        'c_class_subnet': c_class,
+                        'country': data.get('country', ''),
+                        'region': data.get('regionName', ''),
+                        'city': data.get('city', ''),
+                        'isp': data.get('isp', ''),
+                        'org': data.get('org', ''),
+                        'as_info': as_info,
+                        'cached': False
+                    })
+            except Exception as e:
+                return jsonify({'error': f'External API request failed: {str(e)}'}), 500
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        cursor.close()
+        release_db_connection(conn)
+
 if __name__ == '__main__':
     # Initialize database
     init_db()
