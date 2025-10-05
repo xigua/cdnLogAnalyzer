@@ -200,7 +200,9 @@
                         <li>Click "Apply Filter" to generate the blacklist</li>
                         <li>Adjust the threshold and regenerate as needed</li>
                     </ol>
-                    <p class="mt-2 text-xs text-gray-500">Note: C-class subnets with 4+ static-only IPs are converted to /24 CIDR blocks for efficiency.</p>
+                    <p class="mt-2 text-xs text-gray-500">
+                        <strong>Format:</strong> C-class subnets with 2+ static-only IPs → /24 CIDR blocks | Individual IPs sorted by traffic (highest first) with tier markers (≥100MB: per 100MB, <100MB: per 10MB)
+                    </p>
                     <p class="mt-2" id="blacklistFilterInfo"><span class="font-medium">Status:</span> Ready to generate</p>
                 </div>
 
@@ -1327,10 +1329,11 @@
                 }
 
                 // Update statistics
-                const originalCount = data.original_count || staticIPs.length;
-                const cidrCount = staticIPs.filter(ip => ip.includes('/24')).length;
+                const originalCount = data.original_count || 0;
+                const cidrCount = data.cidr_count || 0;
+                const actualCount = data.count || 0;
 
-                document.getElementById('blacklistTotal').textContent = staticIPs.length.toLocaleString();
+                document.getElementById('blacklistTotal').textContent = actualCount.toLocaleString();
                 document.getElementById('blacklistOriginal').textContent = originalCount.toLocaleString();
                 document.getElementById('blacklistOptimized').textContent = cidrCount.toLocaleString();
 

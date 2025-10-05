@@ -1788,14 +1788,17 @@ def get_static_only_ips():
         conn = get_db_connection()
         cursor = conn.cursor()
 
-        # Get all static-only IPs with traffic filter
+        # Get all static-only IPs with traffic filter, including traffic info
         cursor.execute("""
-            SELECT ip
+            SELECT ip, total_response_size
             FROM ip_statistics
             WHERE is_static_only = TRUE AND total_response_size >= %s
+            ORDER BY total_response_size DESC
         """, (min_traffic_bytes,))
 
-        static_only_ips = [row[0] for row in cursor.fetchall()]
+        ip_traffic_data = [(row[0], row[1]) for row in cursor.fetchall()]
+        static_only_ips = [row[0] for row in ip_traffic_data]
+        ip_traffic_map = {row[0]: row[1] for row in ip_traffic_data}
 
         # Get all IP behaviors for safety check
         cursor.execute("""
@@ -1818,38 +1821,73 @@ def get_static_only_ips():
                     subnet_groups[subnet] = []
                 subnet_groups[subnet].append(ip)
 
-        # Convert to blacklist format with safety checks
-        blacklist_entries = []
+        # Separate CIDR blocks and individual IPs
+        cidr_blocks = []
+        individual_ips = []
+
         for subnet, ips in subnet_groups.items():
-            if len(ips) >= 4:
+            if len(ips) >= 2:
                 # Safety check: ensure no IP in this subnet has accessed dynamic content
                 subnet_is_safe = is_subnet_safe_to_block(subnet, ip_behaviors)
 
                 if subnet_is_safe:
-                    # Use CIDR notation for 4+ IPs in same C-class
-                    blacklist_entries.append(f"{subnet}.0/24")
+                    # Use CIDR notation for 2+ IPs in same C-class
+                    cidr_blocks.append(f"{subnet}.0/24")
                 else:
                     # Not safe to block entire subnet, add individual static-only IPs
-                    blacklist_entries.extend(ips)
+                    individual_ips.extend(ips)
             else:
                 # Add individual IPs
-                blacklist_entries.extend(ips)
+                individual_ips.extend(ips)
 
-        # Sort entries (CIDR blocks first, then individual IPs)
-        def sort_key(entry):
-            if '/24' in entry:
-                # CIDR block - sort by network address
-                network = entry.replace('.0/24', '')
-                return (0, tuple(int(part) for part in network.split('.')))
-            else:
-                # Individual IP
-                return (1, tuple(int(part) for part in entry.split('.')))
+        # Sort CIDR blocks by network address
+        cidr_blocks.sort(key=lambda x: tuple(int(part) for part in x.replace('.0/24', '').split('.')))
 
-        blacklist_entries.sort(key=sort_key)
+        # Sort individual IPs by traffic (descending)
+        individual_ips.sort(key=lambda ip: ip_traffic_map.get(ip, 0), reverse=True)
+
+        # Build final blacklist with traffic comments
+        blacklist_entries = []
+
+        # Add CIDR blocks first
+        if cidr_blocks:
+            blacklist_entries.append("# === C-Class Subnets (CIDR /24 blocks) ===")
+            blacklist_entries.extend(cidr_blocks)
+            blacklist_entries.append("")
+
+        # Add individual IPs with traffic tier comments
+        if individual_ips:
+            blacklist_entries.append("# === Individual IPs (sorted by traffic, highest first) ===")
+
+            current_tier_mb = None
+            for ip in individual_ips:
+                traffic_bytes = ip_traffic_map.get(ip, 0)
+                traffic_mb = traffic_bytes / (1024 * 1024)
+
+                # Determine tier based on traffic
+                if traffic_mb >= 100:
+                    # For >= 100MB: use 100MB intervals
+                    tier_mb = (int(traffic_mb) // 100) * 100
+                else:
+                    # For < 100MB: use 10MB intervals (90, 80, 70, ..., 0)
+                    tier_mb = (int(traffic_mb) // 10) * 10
+
+                # Add comment when entering a new traffic tier
+                if tier_mb != current_tier_mb:
+                    if current_tier_mb is not None:
+                        blacklist_entries.append("")  # Add blank line between tiers
+                    blacklist_entries.append(f"# Traffic >= {tier_mb} MB")
+                    current_tier_mb = tier_mb
+
+                blacklist_entries.append(ip)
+
+        # Count only actual IPs/CIDR blocks (exclude comments and blank lines)
+        actual_entries = [e for e in blacklist_entries if e and not e.startswith('#')]
 
         result_data = {
             'static_only_ips': blacklist_entries,
-            'count': len(blacklist_entries),
+            'count': len(actual_entries),
+            'cidr_count': len(cidr_blocks),
             'original_count': len(static_only_ips),
             'min_traffic_mb': min_traffic_mb
         }
