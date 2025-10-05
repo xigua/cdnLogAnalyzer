@@ -322,7 +322,7 @@ def analyze_static_vs_dynamic_traffic_for_range(self) -> Dict[str, Any]:
     result = cursor.fetchone()
     total_traffic = result['total'] if result and result['total'] else 0
 
-    # Get static-only IPs
+    # Get static-only IPs (show all)
     cursor.execute("""
         SELECT
             ip,

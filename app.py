@@ -331,7 +331,7 @@ class LogAnalyzer:
             print("Please wait... This query is processing millions of records grouped by IP address.")
             cursor.execute("""
                 INSERT INTO ip_statistics (
-                    ip, total_requests, total_bytes_sent, unique_urls, unique_user_agents,
+                    ip, total_requests, total_bytes_sent, total_response_size, unique_urls, unique_user_agents,
                     static_requests, dynamic_requests, is_static_only,
                     first_seen, last_seen, requests_per_minute
                 )
@@ -339,6 +339,7 @@ class LogAnalyzer:
                     ip,
                     COUNT(*) as total_requests,
                     SUM(response_size) as total_bytes_sent,
+                    SUM(response_size) as total_response_size,
                     COUNT(DISTINCT url) as unique_urls,
                     COUNT(DISTINCT user_agent) as unique_user_agents,
                     SUM(CASE WHEN is_dynamic = FALSE THEN 1 ELSE 0 END) as static_requests,
@@ -1778,15 +1779,21 @@ def is_subnet_safe_to_block(subnet, all_ip_behaviors):
 def get_static_only_ips():
     """Get all static-only IP addresses for blacklisting from database"""
     try:
+        # Get min_traffic_mb from query parameter
+        min_traffic_mb = int(request.args.get('min_traffic_mb', 0))
+        min_traffic_bytes = min_traffic_mb * 1024 * 1024
+
+        print(f"Generating blacklist with min_traffic_mb = {min_traffic_mb} MB ({min_traffic_bytes} bytes)")
+
         conn = get_db_connection()
         cursor = conn.cursor()
 
-        # Get all static-only IPs
+        # Get all static-only IPs with traffic filter
         cursor.execute("""
             SELECT ip
             FROM ip_statistics
-            WHERE is_static_only = TRUE
-        """)
+            WHERE is_static_only = TRUE AND total_response_size >= %s
+        """, (min_traffic_bytes,))
 
         static_only_ips = [row[0] for row in cursor.fetchall()]
 
@@ -1843,29 +1850,9 @@ def get_static_only_ips():
         result_data = {
             'static_only_ips': blacklist_entries,
             'count': len(blacklist_entries),
-            'original_count': len(static_only_ips)
+            'original_count': len(static_only_ips),
+            'min_traffic_mb': min_traffic_mb
         }
-
-        # Save to blacklist cache
-        try:
-            cache_conn = get_db_connection()
-            cache_cursor = cache_conn.cursor()
-
-            # Clear old cache
-            cache_cursor.execute("TRUNCATE TABLE blacklist_cache")
-
-            # Save new cache
-            cache_cursor.execute("""
-                INSERT INTO blacklist_cache (blacklist_data)
-                VALUES (%s)
-            """, (json.dumps(result_data, cls=DecimalEncoder),))
-
-            cache_conn.commit()
-            cache_cursor.close()
-            release_db_connection(cache_conn)
-            print("Blacklist saved to cache")
-        except Exception as cache_error:
-            print(f"Warning: Failed to save blacklist cache: {cache_error}")
 
         return jsonify(result_data)
 

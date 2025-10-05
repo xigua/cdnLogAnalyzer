@@ -49,9 +49,9 @@
                         class="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 focus:ring-2 focus:ring-blue-500 focus:ring-offset-2">
                     📊 Analyze Logs
                 </button>
-                <button onclick="showCachedBlacklist()"
+                <button onclick="showBlacklistDialog()"
                         class="px-6 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 focus:ring-2 focus:ring-red-500 focus:ring-offset-2">
-                    🚫 Show IP Blacklist
+                    🚫 Generate IP Blacklist
                 </button>
                 <button onclick="showDeepAnalysis()"
                         class="px-6 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 focus:ring-2 focus:ring-purple-500 focus:ring-offset-2">
@@ -160,6 +160,23 @@
             <div class="bg-white rounded-lg shadow-xl p-8 max-w-4xl w-full mx-4 h-screen overflow-hidden flex flex-col">
                 <h2 class="text-2xl font-semibold mb-4">IP Blacklist Generator</h2>
 
+                <!-- Traffic Filter Input -->
+                <div class="mb-4">
+                    <label class="block text-sm font-medium text-gray-700 mb-2">
+                        Minimum Traffic Threshold (MB)
+                        <span class="text-xs text-gray-500 font-normal">- Only include static-only IPs with traffic ≥ this value</span>
+                    </label>
+                    <div class="flex gap-2">
+                        <input type="number" id="blacklistMinTrafficMB" min="0" step="1" value="0"
+                               class="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                               placeholder="Enter minimum traffic in MB (0 = all IPs)">
+                        <button onclick="loadBlacklistData()"
+                                class="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 focus:ring-2 focus:ring-blue-500">
+                            Apply Filter
+                        </button>
+                    </div>
+                </div>
+
                 <!-- Statistics Summary -->
                 <div id="blacklistStats" class="grid grid-cols-3 gap-4 mb-4 p-4 bg-gray-50 rounded-lg">
                     <div class="text-center">
@@ -177,8 +194,14 @@
                 </div>
 
                 <div class="text-sm text-gray-600 mb-4">
-                    <p>These IP addresses/ranges only access static files and never make API calls.</p>
-                    <p class="mt-1">C-class subnets with 4+ IPs are converted to /24 CIDR blocks for efficiency.</p>
+                    <p><strong>How to use:</strong></p>
+                    <ol class="mt-1 ml-4 list-decimal space-y-1">
+                        <li>Set minimum traffic threshold (MB) - only IPs with traffic ≥ this value will be included</li>
+                        <li>Click "Apply Filter" to generate the blacklist</li>
+                        <li>Adjust the threshold and regenerate as needed</li>
+                    </ol>
+                    <p class="mt-2 text-xs text-gray-500">Note: C-class subnets with 4+ static-only IPs are converted to /24 CIDR blocks for efficiency.</p>
+                    <p class="mt-2" id="blacklistFilterInfo"><span class="font-medium">Status:</span> Ready to generate</p>
                 </div>
 
                 <!-- IP List -->
@@ -1247,6 +1270,18 @@
         function showBlacklistDialog() {
             document.getElementById('blacklistModal').classList.remove('hidden');
             document.getElementById('blacklistModal').classList.add('flex');
+
+            // Set default filter value to 0 (show all IPs)
+            document.getElementById('blacklistMinTrafficMB').value = 0;
+
+            // Set initial status
+            document.getElementById('blacklistTotal').textContent = '-';
+            document.getElementById('blacklistOriginal').textContent = '-';
+            document.getElementById('blacklistOptimized').textContent = '-';
+            document.getElementById('blacklistContent').value = 'Enter a traffic threshold above and click "Apply Filter" to generate the IP blacklist.';
+            document.getElementById('blacklistFilterInfo').innerHTML = '<span class="font-medium">Status:</span> Ready to generate';
+
+            // Auto-load with default value
             loadBlacklistData();
         }
 
@@ -1257,8 +1292,22 @@
 
         async function loadBlacklistData() {
             try {
-                // Fetch all static-only IPs from the server
-                const response = await fetch('/api/static-only-ips');
+                // Get min traffic threshold from input
+                const minTrafficMB = parseInt(document.getElementById('blacklistMinTrafficMB').value) || 0;
+
+                if (minTrafficMB < 0) {
+                    alert('Minimum traffic must be non-negative');
+                    return;
+                }
+
+                // Show loading state
+                document.getElementById('blacklistTotal').textContent = 'Loading...';
+                document.getElementById('blacklistOriginal').textContent = '-';
+                document.getElementById('blacklistOptimized').textContent = '-';
+                document.getElementById('blacklistContent').value = 'Generating IP blacklist...';
+
+                // Fetch all static-only IPs from the server with filter
+                const response = await fetch(`/api/static-only-ips?min_traffic_mb=${minTrafficMB}`);
                 const data = await response.json();
 
                 if (!response.ok) {
@@ -1269,8 +1318,11 @@
                 const staticIPs = data.static_only_ips;
 
                 if (!staticIPs || staticIPs.length === 0) {
-                    alert('No static-only IPs found. All IPs are accessing dynamic content.');
-                    closeBlacklistDialog();
+                    document.getElementById('blacklistTotal').textContent = '0';
+                    document.getElementById('blacklistOriginal').textContent = '0';
+                    document.getElementById('blacklistOptimized').textContent = '0';
+                    document.getElementById('blacklistContent').value = 'No static-only IPs found with the specified traffic threshold.\n\nTry:\n1. Running "Analyze Logs" first\n2. Lowering the traffic threshold';
+                    document.getElementById('blacklistFilterInfo').innerHTML = `<span class="font-medium text-orange-600">⚠️ No IPs found with traffic ≥ ${minTrafficMB} MB</span>`;
                     return;
                 }
 
@@ -1281,6 +1333,14 @@
                 document.getElementById('blacklistTotal').textContent = staticIPs.length.toLocaleString();
                 document.getElementById('blacklistOriginal').textContent = originalCount.toLocaleString();
                 document.getElementById('blacklistOptimized').textContent = cidrCount.toLocaleString();
+
+                // Update filter info (using minTrafficMB from above)
+                const filterInfo = document.getElementById('blacklistFilterInfo');
+                if (minTrafficMB > 0) {
+                    filterInfo.innerHTML = `<span class="font-medium">Filter:</span> <span class="text-blue-600 font-semibold">Showing IPs with traffic ≥ ${minTrafficMB} MB</span>`;
+                } else {
+                    filterInfo.innerHTML = `<span class="font-medium">Filter:</span> Showing all IPs`;
+                }
 
                 // Display IP list
                 const ipListText = staticIPs.join('\n');
@@ -1614,46 +1674,6 @@
             } catch (error) {
                 loading.style.display = 'none';
                 content.innerHTML = `<p class="text-red-500 text-center py-8">Error: ${error.message}</p>`;
-            }
-        }
-
-        async function showCachedBlacklist() {
-            try {
-                // Fetch cached blacklist from the server
-                const response = await fetch('/api/blacklist-cache');
-                const data = await response.json();
-
-                if (!response.ok || !data.blacklist_data) {
-                    alert('No cached blacklist found. Please analyze logs first.');
-                    return;
-                }
-
-                blacklistData = data.blacklist_data;
-                const staticIPs = data.blacklist_data.static_only_ips;
-
-                if (!staticIPs || staticIPs.length === 0) {
-                    alert('No static-only IPs found in cached blacklist.');
-                    return;
-                }
-
-                // Show the modal
-                document.getElementById('blacklistModal').classList.remove('hidden');
-                document.getElementById('blacklistModal').classList.add('flex');
-
-                // Update statistics
-                const originalCount = data.blacklist_data.original_count || staticIPs.length;
-                const cidrCount = staticIPs.filter(ip => ip.includes('/24')).length;
-
-                document.getElementById('blacklistTotal').textContent = staticIPs.length.toLocaleString();
-                document.getElementById('blacklistOriginal').textContent = originalCount.toLocaleString();
-                document.getElementById('blacklistOptimized').textContent = cidrCount.toLocaleString();
-
-                // Display IP list
-                const ipListText = staticIPs.join('\n');
-                document.getElementById('blacklistContent').value = ipListText;
-
-            } catch (error) {
-                alert('Error loading cached blacklist: ' + error.message);
             }
         }
 
