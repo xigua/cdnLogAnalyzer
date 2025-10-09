@@ -177,12 +177,61 @@ def init_db():
     print("Database tables initialized successfully")
 
 def get_db_connection():
-    """Get a connection from the pool"""
-    return db_pool.getconn()
+    """Get a connection from the pool with timeout"""
+    import threading
+
+    try:
+        # Get connection stats before acquiring
+        available = len(db_pool._pool)
+        in_use = db_pool.maxconn - available
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] DB Pool status - Total: {db_pool.maxconn}, Available: {available}, In Use: {in_use}")
+
+        if available == 0:
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] WARNING: No connections available! All {db_pool.maxconn} connections are in use. Waiting...")
+
+        # Get connection with timeout using threading
+        conn_result = [None]
+        error_result = [None]
+
+        def get_conn():
+            try:
+                conn_result[0] = db_pool.getconn()
+            except Exception as e:
+                error_result[0] = e
+
+        thread = threading.Thread(target=get_conn)
+        thread.daemon = True
+        thread.start()
+        thread.join(timeout=10)  # 10 second timeout
+
+        if thread.is_alive():
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] ERROR: Timeout waiting for DB connection after 10 seconds")
+            raise Exception("Timeout waiting for database connection - pool may be exhausted")
+
+        if error_result[0]:
+            raise error_result[0]
+
+        conn = conn_result[0]
+        if not conn:
+            raise Exception("Failed to get database connection")
+
+        # Set statement timeout to 5 minutes for all connections
+        cursor = conn.cursor()
+        cursor.execute("SET statement_timeout = '300000'")  # 5 minutes
+        cursor.close()
+        conn.commit()
+        return conn
+    except Exception as e:
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] ERROR getting DB connection: {str(e)}")
+        raise
 
 def release_db_connection(conn):
     """Release a connection back to the pool"""
-    db_pool.putconn(conn)
+    try:
+        db_pool.putconn(conn)
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] DB connection released. Available: {len(db_pool._pool)}")
+    except Exception as e:
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] ERROR releasing DB connection: {str(e)}")
 
 @dataclass
 class LogEntry:
@@ -264,43 +313,65 @@ class LogAnalyzer:
         if not entries_batch:
             return
 
-        conn = get_db_connection()
-        cursor = conn.cursor()
+        batch_size = len(entries_batch)
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] Getting DB connection for batch of {batch_size} entries...")
 
-        # Prepare data for batch insert
-        insert_data = [
-            (
-                entry.timestamp,
-                entry.ip,
-                entry.response_time,
-                entry.method,
-                entry.url,
-                entry.status_code,
-                entry.request_size,
-                entry.response_size,
-                entry.cache_status,
-                entry.user_agent,
-                entry.content_type,
-                entry.original_ip,
-                # Pre-calculate is_dynamic to avoid scanning in aggregation
-                ('/api/' in entry.url or '/chess/' in entry.url or '/homework/' in entry.url)
-            )
-            for entry in entries_batch
-        ]
+        conn = None
+        cursor = None
+        try:
+            conn = get_db_connection()
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] DB connection acquired")
+            cursor = conn.cursor()
 
-        # Batch insert with ON CONFLICT DO NOTHING to skip duplicates
-        execute_batch(cursor, """
-            INSERT INTO log_entries (
-                timestamp, ip, response_time, method, url, status_code,
-                request_size, response_size, cache_status, user_agent,
-                content_type, original_ip, is_dynamic
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (timestamp, ip, url, status_code) DO NOTHING
-        """, insert_data, page_size=500)
+            # Prepare data for batch insert
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] Preparing insert data...")
+            insert_data = [
+                (
+                    entry.timestamp,
+                    entry.ip,
+                    entry.response_time,
+                    entry.method,
+                    entry.url,
+                    entry.status_code,
+                    entry.request_size,
+                    entry.response_size,
+                    entry.cache_status,
+                    entry.user_agent,
+                    entry.content_type,
+                    entry.original_ip,
+                    # Pre-calculate is_dynamic to avoid scanning in aggregation
+                    ('/api/' in entry.url or '/chess/' in entry.url or '/homework/' in entry.url)
+                )
+                for entry in entries_batch
+            ]
 
-        conn.commit()
-        cursor.close()
-        release_db_connection(conn)
+            # Batch insert with ON CONFLICT DO NOTHING to skip duplicates
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] Executing batch insert...")
+            execute_batch(cursor, """
+                INSERT INTO log_entries (
+                    timestamp, ip, response_time, method, url, status_code,
+                    request_size, response_size, cache_status, user_agent,
+                    content_type, original_ip, is_dynamic
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (timestamp, ip, url, status_code) DO NOTHING
+            """, insert_data, page_size=500)
+
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] Committing transaction...")
+            conn.commit()
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] Transaction committed successfully")
+
+        except Exception as e:
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] ERROR in insert_entries_to_db: {str(e)}")
+            if conn:
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] Rolling back transaction...")
+                conn.rollback()
+            raise
+        finally:
+            if cursor:
+                cursor.close()
+            if conn:
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] Releasing DB connection")
+                release_db_connection(conn)
 
     def calculate_and_store_ip_statistics(self):
         """Calculate IP statistics from database and store in ip_statistics table"""
@@ -1095,17 +1166,49 @@ def analyze_logs_with_progress():
         )
 
     def generate():
+        import sys
+        global db_pool  # Declare global at the top of function
+
         # Send initial message
-        yield f"data: {json.dumps({'status': 'started', 'message': 'Starting analysis...'})}\n\n"
+        initial_msg = f"data: {json.dumps({'status': 'started', 'message': 'Starting analysis...'})}\n\n"
+        yield initial_msg
+        sys.stdout.flush()  # Force flush stdout
 
         try:
-            print(f"Starting log analysis for directory: {directory_path}")
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] Starting log analysis for directory: {directory_path}")
+
+            # Check connection pool health
+            available = len(db_pool._pool)
+            in_use = db_pool.maxconn - available
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] Initial DB Pool status - Available: {available}, In Use: {in_use}")
+
+            # If too many connections are in use, warn and try to clean up
+            if in_use > 15:
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] WARNING: {in_use} connections in use! This may indicate connection leaks from previous requests.")
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] Attempting to close idle connections...")
+                # Close all idle connections in the pool
+                try:
+                    while db_pool._pool:
+                        conn = db_pool._pool.pop()
+                        try:
+                            conn.close()
+                        except:
+                            pass
+                    # Reinitialize pool
+                    db_pool.closeall()
+                    db_pool = SimpleConnectionPool(1, 20, **DB_CONFIG)
+                    print(f"[{datetime.now().strftime('%H:%M:%S')}] DB pool reinitialized")
+                except Exception as pool_error:
+                    print(f"[{datetime.now().strftime('%H:%M:%S')}] Error reinitializing pool: {pool_error}")
+
             # Create analyzer instance for this request
             analyzer_instance = LogAnalyzer()
-            print("Analyzer instance created successfully")
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] Analyzer instance created successfully")
 
             # Define progress callback that yields progress updates
             def progress_callback(data):
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] Progress update: {data.get('message', 'unknown')}")
+                sys.stdout.flush()  # Force flush after each progress update
                 return f"data: {json.dumps(data)}\n\n"
 
             # Process directory with real-time progress updates
@@ -1117,16 +1220,21 @@ def analyze_logs_with_progress():
             start_time = time.time()
             analyzer_instance.entries = []
 
-            # Send initial progress
-            initial_data = {
-                'progress': 0.0,
-                'message': f'Found {total_files} .gz files to process',
-                'current_file_index': 0,
-                'total_files': total_files,
-                'current_file': '',
-                'estimated_remaining_seconds': 0
-            }
-            yield progress_callback(initial_data)
+            # Send initial progress (but don't wait for response)
+            try:
+                initial_data = {
+                    'progress': 0.0,
+                    'message': f'Found {total_files} .gz files to process',
+                    'current_file_index': 0,
+                    'total_files': total_files,
+                    'current_file': '',
+                    'estimated_remaining_seconds': 0
+                }
+                yield progress_callback(initial_data)
+                sys.stdout.flush()
+            except GeneratorExit:
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] Client disconnected early")
+                return
 
             # Process each file and commit individually
             total_lines_processed = 0
@@ -1149,17 +1257,33 @@ def analyze_logs_with_progress():
                 # Buffer for this file only
                 file_entries = []
 
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] Opening gzip file: {filename}")
                 with gzip.open(filepath, 'rt', encoding='utf-8', errors='ignore') as f:
                     line_count = 0
+                    last_log_time = time.time()
+
                     for line in f:
-                        entry = analyzer_instance.parse_log_line(line)
-                        if entry:
-                            file_entries.append(entry)
+                        # Debug: Print heartbeat every 5 seconds even if no progress update
+                        current_time = time.time()
+                        if current_time - last_log_time > 5:
+                            print(f"[{datetime.now().strftime('%H:%M:%S')}] Still reading {filename}, line {line_count}")
+                            last_log_time = current_time
+
+                        try:
+                            entry = analyzer_instance.parse_log_line(line)
+                            if entry:
+                                file_entries.append(entry)
+                        except Exception as parse_error:
+                            print(f"[{datetime.now().strftime('%H:%M:%S')}] ERROR parsing line {line_count} in {filename}: {str(parse_error)[:100]}")
+                            # Continue processing other lines
+
                         line_count += 1
                         total_lines_processed += 1
 
-                        # Send progress every 1000 lines
-                        if line_count % 1000 == 0:
+                        # Send progress every 20000 lines (reduced frequency to avoid blocking)
+                        # Also skip progress updates for first 20000 lines to avoid early blocking
+                        if line_count % 20000 == 0 and line_count >= 20000:
+                            print(f"[{datetime.now().strftime('%H:%M:%S')}] Reached {line_count} lines in {filename}, preparing progress update...")
                             file_progress = ((i + 0.5) / total_files) * 0.7 if total_files > 0 else 0.35
                             progress_data = {
                                 'progress': min(file_progress, 0.7),
@@ -1169,7 +1293,16 @@ def analyze_logs_with_progress():
                                 'current_file': filename,
                                 'estimated_remaining_seconds': analyzer_instance._calculate_remaining_time(i, total_files, start_time)
                             }
-                            yield progress_callback(progress_data)
+                            print(f"[{datetime.now().strftime('%H:%M:%S')}] Yielding progress update...")
+
+                            # Yield and force flush
+                            msg = progress_callback(progress_data)
+                            yield msg
+                            sys.stdout.flush()  # Force flush stdout
+
+                            print(f"[{datetime.now().strftime('%H:%M:%S')}] Progress update yielded successfully, continuing...")
+
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] Finished reading {filename}, total lines: {line_count}")
 
                 # Insert all entries from this file
                 if file_entries:
@@ -1184,11 +1317,17 @@ def analyze_logs_with_progress():
                         }
                         yield progress_callback(progress_data)
 
-                        print(f"Inserting {len(file_entries)} entries from file {filename}")
+                        print(f"[{datetime.now().strftime('%H:%M:%S')}] Starting DB insert for {len(file_entries)} entries from file {filename}")
+                        insert_start = time.time()
                         analyzer_instance.insert_entries_to_db(file_entries)
-                        print(f"File {filename} inserted successfully ({len(file_entries)} entries)")
+                        insert_duration = time.time() - insert_start
+                        print(f"[{datetime.now().strftime('%H:%M:%S')}] File {filename} inserted successfully ({len(file_entries)} entries in {insert_duration:.2f}s)")
+
+                        # Clear file entries to free memory
+                        file_entries.clear()
+
                     except Exception as file_error:
-                        print(f"ERROR inserting entries from file {filename}: {str(file_error)}")
+                        print(f"[{datetime.now().strftime('%H:%M:%S')}] ERROR inserting entries from file {filename}: {str(file_error)}")
                         import traceback
                         print(traceback.format_exc())
                         raise
@@ -1305,16 +1444,20 @@ def analyze_logs_with_progress():
             }
             yield f"data: {json.dumps(error_data)}\n\n"
 
-    return Response(
+    response = Response(
         generate(),
         mimetype='text/event-stream',
         headers={
             'Cache-Control': 'no-cache',
+            'X-Accel-Buffering': 'no',  # Disable nginx buffering
             'Connection': 'keep-alive',
             'Access-Control-Allow-Origin': '*',
             'Access-Control-Allow-Headers': 'Content-Type'
         }
     )
+    # Disable werkzeug response buffering
+    response.implicit_sequence_conversion = False
+    return response
 
 @app.route('/api/db-stats', methods=['GET'])
 def get_db_stats():
@@ -1523,6 +1666,14 @@ def analyze_time_range():
                 print("Results saved to cache")
             except Exception as cache_error:
                 print(f"Warning: Failed to save cache: {cache_error}")
+                # Make sure to release connection on error
+                if 'cache_conn' in locals() and cache_conn:
+                    try:
+                        if 'cache_cursor' in locals() and cache_cursor:
+                            cache_cursor.close()
+                        release_db_connection(cache_conn)
+                    except:
+                        pass
 
             yield f"data: {json.dumps({'status': 'completed', 'progress': 1.0, 'message': 'Analysis complete!', 'results': results, 'time_range': {'start': start_time, 'end': end_time}}, cls=DecimalEncoder)}\n\n"
 
