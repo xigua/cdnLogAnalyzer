@@ -2065,7 +2065,7 @@ def ip_range_analysis():
             # 1. Has at least 2 IPs total
             # 2. Dynamic IPs < 3
             # 3. Static IPs >= Dynamic IPs (majority are static)
-            if total_count >= 2 and dynamic_count < 3 and static_count >= dynamic_count:
+            if total_count >= 2 and dynamic_count <= 5 and static_count >= dynamic_count:
                 ratio = dynamic_count / static_count if static_count > 0 else 0
                 suspicious_c_classes.append({
                     'c_class': c_class,
@@ -2082,92 +2082,94 @@ def ip_range_analysis():
                 for ip_info in data['dynamic_ips']:
                     individual_ips.append(ip_info)
 
-        # Now aggregate suspicious C-classes into larger subnets (/20, /21, B-class)
-        # Group by B-class, /21, /20
-        larger_subnet_groups = {
-            'b_class': {},    # /16
-            'slash_20': {},   # /20
-            'slash_21': {}    # /21
-        }
+        # Now aggregate suspicious C-classes into larger subnets
+        # Strategy: Start from largest subnet (/20) and work down to smallest (/24)
+        # This ensures we use the most compact representation possible
 
-        for c_data in suspicious_c_classes:
-            c_class = c_data['c_class']
-            parts = c_class.split('.')
-
-            # B-class (/16)
-            b_class = f"{parts[0]}.{parts[1]}"
-            if b_class not in larger_subnet_groups['b_class']:
-                larger_subnet_groups['b_class'][b_class] = []
-            larger_subnet_groups['b_class'][b_class].append(c_data)
-
-            # /21 (8 C-classes)
-            third_octet = int(parts[2])
-            slash_21_base = (third_octet // 8) * 8
-            slash_21 = f"{parts[0]}.{parts[1]}.{slash_21_base}"
-            if slash_21 not in larger_subnet_groups['slash_21']:
-                larger_subnet_groups['slash_21'][slash_21] = []
-            larger_subnet_groups['slash_21'][slash_21].append(c_data)
-
-            # /20 (16 C-classes)
-            slash_20_base = (third_octet // 16) * 16
-            slash_20 = f"{parts[0]}.{parts[1]}.{slash_20_base}"
-            if slash_20 not in larger_subnet_groups['slash_20']:
-                larger_subnet_groups['slash_20'][slash_20] = []
-            larger_subnet_groups['slash_20'][slash_20].append(c_data)
-
-        # Identify larger subnets where majority of C-classes are suspicious
-        aggregated_subnets = []
+        # Create a map of suspicious C-classes for quick lookup
+        suspicious_c_class_map = {c['c_class']: c for c in suspicious_c_classes}
         processed_c_classes = set()
+        aggregated_subnets = []
 
-        # Check /21 subnets (if >= 4 C-classes out of 8 are suspicious, aggregate)
-        for slash_21, c_classes in larger_subnet_groups['slash_21'].items():
-            if len(c_classes) >= 4:
-                total_traffic = sum(c['total_traffic'] for c in c_classes)
-                total_static = sum(c['static_count'] for c in c_classes)
-                total_dynamic = sum(c['dynamic_count'] for c in c_classes)
+        # Helper function to calculate subnet aggregation
+        def try_aggregate_subnet(first_octet, second_octet, third_octet_base, subnet_size, cidr_prefix):
+            """
+            Try to aggregate a subnet if ALL C-classes in the range are suspicious.
+            subnet_size: number of /24 subnets in this range
+            cidr_prefix: the CIDR notation (e.g., 20, 21, 22, 23)
+
+            IMPORTANT: Only aggregate if EVERY C-class in the range exists in suspicious_c_class_map.
+            This ensures no "holes" in the subnet (e.g., don't create /23 if only one /24 exists).
+            """
+            c_classes_in_range = []
+            expected_c_classes = []
+
+            for offset in range(subnet_size):
+                third_octet = third_octet_base + offset
+                if third_octet > 255:
+                    break
+                c_class = f"{first_octet}.{second_octet}.{third_octet}"
+                expected_c_classes.append(c_class)
+
+                if c_class in suspicious_c_class_map and c_class not in processed_c_classes:
+                    c_classes_in_range.append(c_class)
+
+            # Only aggregate if ALL expected C-classes are present (100% coverage required)
+            # This prevents creating a /23 when only one /24 exists
+            if len(c_classes_in_range) == len(expected_c_classes) and len(c_classes_in_range) > 0:
+                # Calculate aggregated statistics
+                total_traffic = sum(suspicious_c_class_map[c]['total_traffic'] for c in c_classes_in_range)
+                total_static = sum(suspicious_c_class_map[c]['static_count'] for c in c_classes_in_range)
+                total_dynamic = sum(suspicious_c_class_map[c]['dynamic_count'] for c in c_classes_in_range)
                 total_ips = total_static + total_dynamic
                 ratio = total_dynamic / total_static if total_static > 0 else 0
 
                 aggregated_subnets.append({
-                    'subnet': f"{slash_21}.0/21",
+                    'subnet': f"{first_octet}.{second_octet}.{third_octet_base}.0/{cidr_prefix}",
                     'static_count': total_static,
                     'dynamic_count': total_dynamic,
                     'total_count': total_ips,
                     'ratio': ratio,
                     'total_traffic': total_traffic,
-                    'c_class_count': len(c_classes)
+                    'c_class_count': len(c_classes_in_range)
                 })
 
                 # Mark these C-classes as processed
-                for c in c_classes:
-                    processed_c_classes.add(c['c_class'])
+                for c_class in c_classes_in_range:
+                    processed_c_classes.add(c_class)
 
-        # Check /20 subnets (if >= 8 C-classes out of 16 are suspicious, aggregate)
-        for slash_20, c_classes in larger_subnet_groups['slash_20'].items():
-            if len(c_classes) >= 8:
-                # Skip if already covered by /21
-                if any(c['c_class'] in processed_c_classes for c in c_classes):
-                    continue
+                return True
+            return False
 
-                total_traffic = sum(c['total_traffic'] for c in c_classes)
-                total_static = sum(c['static_count'] for c in c_classes)
-                total_dynamic = sum(c['dynamic_count'] for c in c_classes)
-                total_ips = total_static + total_dynamic
-                ratio = total_dynamic / total_static if total_static > 0 else 0
+        # Group suspicious C-classes by first two octets (B-class)
+        grouped_by_b_class = set()
+        for c_class in suspicious_c_class_map.keys():
+            parts = c_class.split('.')
+            b_class = f"{parts[0]}.{parts[1]}"
+            grouped_by_b_class.add(b_class)
 
-                aggregated_subnets.append({
-                    'subnet': f"{slash_20}.0/20",
-                    'static_count': total_static,
-                    'dynamic_count': total_dynamic,
-                    'total_count': total_ips,
-                    'ratio': ratio,
-                    'total_traffic': total_traffic,
-                    'c_class_count': len(c_classes)
-                })
+        # Process each B-class range
+        for b_class in grouped_by_b_class:
+            parts = b_class.split('.')
+            first_octet = parts[0]
+            second_octet = parts[1]
 
-                # Mark these C-classes as processed
-                for c in c_classes:
-                    processed_c_classes.add(c['c_class'])
+            # Try to aggregate in order: /20, /21, /22, /23
+            # /20: covers 16 C-classes (0-15, 16-31, 32-47, ...)
+            for base in range(0, 256, 16):
+                try_aggregate_subnet(first_octet, second_octet, base, 16, 20)
+
+            # /21: covers 8 C-classes (0-7, 8-15, 16-23, ...)
+            for base in range(0, 256, 8):
+                try_aggregate_subnet(first_octet, second_octet, base, 8, 21)
+
+            # /22: covers 4 C-classes (0-3, 4-7, 8-11, ...)
+            for base in range(0, 256, 4):
+                try_aggregate_subnet(first_octet, second_octet, base, 4, 22)
+
+            # /23: covers 2 C-classes (0-1, 2-3, 4-5, ...)
+            for base in range(0, 256, 2):
+                try_aggregate_subnet(first_octet, second_octet, base, 2, 23)
 
         # Add remaining suspicious C-classes that weren't aggregated
         c_class_entries = []
@@ -2183,11 +2185,19 @@ def ip_range_analysis():
                     'c_class_count': 1
                 })
 
-        # Combine aggregated and C-class entries, sort by traffic
+        # Combine aggregated and C-class entries, sort by IP address (not traffic)
         all_subnet_entries = aggregated_subnets + c_class_entries
-        all_subnet_entries.sort(key=lambda x: x['total_traffic'], reverse=True)
 
-        # Sort individual IPs by traffic
+        # Sort by IP address numerically
+        def subnet_sort_key(entry):
+            # Extract IP from subnet (e.g., "116.16.0.0/24" -> [116, 16, 0, 0])
+            subnet_str = entry['subnet'].split('/')[0]  # Remove CIDR mask
+            parts = subnet_str.split('.')
+            return tuple(int(p) for p in parts)
+
+        all_subnet_entries.sort(key=subnet_sort_key)
+
+        # Sort individual IPs by traffic (highest first)
         individual_ips.sort(key=lambda x: x['traffic'], reverse=True)
 
         # Format output
