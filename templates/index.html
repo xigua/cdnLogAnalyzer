@@ -53,6 +53,10 @@
                         class="px-6 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 focus:ring-2 focus:ring-red-500 focus:ring-offset-2">
                     🚫 Generate IP Blacklist
                 </button>
+                <button onclick="showRangeAnalysisDialog()"
+                        class="px-6 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700 focus:ring-2 focus:ring-orange-500 focus:ring-offset-2">
+                    📡 IP Range Analysis
+                </button>
                 <button onclick="showDeepAnalysis()"
                         class="px-6 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 focus:ring-2 focus:ring-purple-500 focus:ring-offset-2">
                     🔍 Deep Analysis
@@ -226,6 +230,82 @@
 
                 <div class="flex gap-4 mt-6">
                     <button onclick="closeBlacklistDialog()"
+                            class="flex-1 px-6 py-2 bg-gray-300 text-gray-700 rounded-lg hover:bg-gray-400">
+                        Close
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- IP Range Analysis Dialog -->
+        <div id="rangeAnalysisModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
+            <div class="bg-white rounded-lg shadow-xl p-8 max-w-6xl w-full mx-4 h-screen overflow-hidden flex flex-col">
+                <h2 class="text-2xl font-semibold mb-4">IP Range Analysis</h2>
+
+                <!-- Traffic Filter Input -->
+                <div class="mb-4">
+                    <label class="block text-sm font-medium text-gray-700 mb-2">
+                        Minimum Traffic Threshold (MB)
+                        <span class="text-xs text-gray-500 font-normal">- Only include IPs with traffic ≥ this value</span>
+                    </label>
+                    <div class="flex gap-2">
+                        <input type="number" id="rangeAnalysisMinTrafficMB" min="0" step="1" value="0"
+                               class="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                               placeholder="Enter minimum traffic in MB (0 = all IPs)">
+                        <button onclick="loadRangeAnalysisData()"
+                                class="px-6 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700 focus:ring-2 focus:ring-orange-500">
+                            Apply Filter
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Statistics Summary -->
+                <div id="rangeAnalysisStats" class="grid grid-cols-3 gap-4 mb-4 p-4 bg-gray-50 rounded-lg">
+                    <div class="text-center">
+                        <div class="text-2xl font-bold text-blue-600" id="rangeAnalysisTotal">-</div>
+                        <div class="text-sm text-gray-600">Total Entries</div>
+                    </div>
+                    <div class="text-center">
+                        <div class="text-2xl font-bold text-orange-600" id="rangeAnalysisSubnets">-</div>
+                        <div class="text-sm text-gray-600">Suspicious Subnets</div>
+                    </div>
+                    <div class="text-center">
+                        <div class="text-2xl font-bold text-green-600" id="rangeAnalysisIndividual">-</div>
+                        <div class="text-sm text-gray-600">Individual IPs</div>
+                    </div>
+                </div>
+
+                <div class="text-sm text-gray-600 mb-4">
+                    <p><strong>About this analysis:</strong></p>
+                    <ul class="mt-1 ml-4 list-disc space-y-1">
+                        <li>Identifies C-class subnets where most IPs access only static content, but a few (&lt;3) access dynamic content</li>
+                        <li>Aggregates into larger subnets (/20, /21) if majority of C-classes are suspicious</li>
+                        <li>Shows dynamic/static ratio for each subnet</li>
+                        <li>Lists individual IPs not in suspicious ranges</li>
+                    </ul>
+                    <p class="mt-2 text-xs text-gray-500">
+                        <strong>Columns:</strong> Subnet, Traffic(MB), Total_IPs, Static_IPs, Dynamic_IPs, Ratio (dynamic/static), C-Classes
+                    </p>
+                    <p class="mt-2" id="rangeAnalysisFilterInfo"><span class="font-medium">Status:</span> Ready to analyze</p>
+                </div>
+
+                <!-- Analysis Results -->
+                <div class="flex-1 overflow-hidden flex flex-col">
+                    <div class="flex justify-between items-center mb-2">
+                        <label class="text-sm font-medium text-gray-700">Analysis Results:</label>
+                        <button onclick="copyRangeAnalysisToClipboard()"
+                                id="copyRangeAnalysisBtn"
+                                class="px-4 py-2 bg-orange-600 text-white text-sm rounded-lg hover:bg-orange-700 focus:ring-2 focus:ring-orange-500">
+                            📋 Copy to Clipboard
+                        </button>
+                    </div>
+                    <textarea id="rangeAnalysisContent"
+                              class="flex-1 w-full px-4 py-2 border border-gray-300 rounded-lg font-mono text-sm resize-none focus:ring-2 focus:ring-orange-500"
+                              readonly></textarea>
+                </div>
+
+                <div class="flex gap-4 mt-6">
+                    <button onclick="closeRangeAnalysisDialog()"
                             class="flex-1 px-6 py-2 bg-gray-300 text-gray-700 rounded-lg hover:bg-gray-400">
                         Close
                     </button>
@@ -1382,6 +1462,123 @@
                     button.innerHTML = originalText;
                     button.classList.remove('bg-green-600', 'hover:bg-green-700');
                     button.classList.add('bg-blue-600', 'hover:bg-blue-700');
+                }, 2000);
+
+            } catch (error) {
+                alert('Failed to copy to clipboard: ' + error.message);
+            }
+        }
+
+        // IP Range Analysis Functions
+        function showRangeAnalysisDialog() {
+            document.getElementById('rangeAnalysisModal').classList.remove('hidden');
+            document.getElementById('rangeAnalysisModal').classList.add('flex');
+
+            // Set default filter value to 0 (show all IPs)
+            document.getElementById('rangeAnalysisMinTrafficMB').value = 0;
+
+            // Set initial status
+            document.getElementById('rangeAnalysisTotal').textContent = '-';
+            document.getElementById('rangeAnalysisSubnets').textContent = '-';
+            document.getElementById('rangeAnalysisIndividual').textContent = '-';
+            document.getElementById('rangeAnalysisContent').value = 'Enter a traffic threshold above and click "Apply Filter" to start the analysis.';
+            document.getElementById('rangeAnalysisFilterInfo').innerHTML = '<span class="font-medium">Status:</span> Ready to analyze';
+
+            // Auto-load with default value
+            loadRangeAnalysisData();
+        }
+
+        function closeRangeAnalysisDialog() {
+            document.getElementById('rangeAnalysisModal').classList.add('hidden');
+            document.getElementById('rangeAnalysisModal').classList.remove('flex');
+        }
+
+        async function loadRangeAnalysisData() {
+            try {
+                // Get min traffic threshold from input
+                const minTrafficMB = parseInt(document.getElementById('rangeAnalysisMinTrafficMB').value) || 0;
+
+                if (minTrafficMB < 0) {
+                    alert('Minimum traffic must be non-negative');
+                    return;
+                }
+
+                // Show loading state
+                document.getElementById('rangeAnalysisTotal').textContent = 'Loading...';
+                document.getElementById('rangeAnalysisSubnets').textContent = '-';
+                document.getElementById('rangeAnalysisIndividual').textContent = '-';
+                document.getElementById('rangeAnalysisContent').value = 'Analyzing IP ranges...';
+
+                // Fetch IP range analysis from the server with filter
+                const response = await fetch(`/api/ip-range-analysis?min_traffic_mb=${minTrafficMB}`);
+                const data = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(data.error || 'Failed to fetch IP range analysis');
+                }
+
+                const analysisLines = data.analysis_lines;
+
+                if (!analysisLines || analysisLines.length === 0) {
+                    document.getElementById('rangeAnalysisTotal').textContent = '0';
+                    document.getElementById('rangeAnalysisSubnets').textContent = '0';
+                    document.getElementById('rangeAnalysisIndividual').textContent = '0';
+                    document.getElementById('rangeAnalysisContent').value = 'No suspicious IP ranges found with the specified traffic threshold.\n\nTry:\n1. Running "Analyze Logs" first\n2. Lowering the traffic threshold';
+                    document.getElementById('rangeAnalysisFilterInfo').innerHTML = `<span class="font-medium text-orange-600">⚠️ No IPs found with traffic ≥ ${minTrafficMB} MB</span>`;
+                    return;
+                }
+
+                // Update statistics
+                const totalEntries = data.total_entries || 0;
+                const suspiciousSubnets = data.suspicious_subnet_count || 0;
+                const individualIPs = data.individual_ip_count || 0;
+
+                document.getElementById('rangeAnalysisTotal').textContent = totalEntries.toLocaleString();
+                document.getElementById('rangeAnalysisSubnets').textContent = suspiciousSubnets.toLocaleString();
+                document.getElementById('rangeAnalysisIndividual').textContent = individualIPs.toLocaleString();
+
+                // Update filter info
+                const filterInfo = document.getElementById('rangeAnalysisFilterInfo');
+                if (minTrafficMB > 0) {
+                    filterInfo.innerHTML = `<span class="font-medium">Filter:</span> <span class="text-orange-600 font-semibold">Showing IPs with traffic ≥ ${minTrafficMB} MB</span>`;
+                } else {
+                    filterInfo.innerHTML = `<span class="font-medium">Filter:</span> Showing all IPs`;
+                }
+
+                // Display analysis results
+                const analysisText = analysisLines.join('\n');
+                document.getElementById('rangeAnalysisContent').value = analysisText;
+
+            } catch (error) {
+                alert('Error fetching IP range analysis: ' + error.message);
+                closeRangeAnalysisDialog();
+            }
+        }
+
+        async function copyRangeAnalysisToClipboard() {
+            const button = document.getElementById('copyRangeAnalysisBtn');
+            const originalText = button.innerHTML;
+
+            try {
+                const analysisText = document.getElementById('rangeAnalysisContent').value;
+
+                if (!analysisText) {
+                    alert('No analysis results to copy');
+                    return;
+                }
+
+                // Copy to clipboard
+                await navigator.clipboard.writeText(analysisText);
+
+                // Show success message
+                button.innerHTML = '✅ Copied!';
+                button.classList.remove('bg-orange-600', 'hover:bg-orange-700');
+                button.classList.add('bg-green-600', 'hover:bg-green-700');
+
+                setTimeout(() => {
+                    button.innerHTML = originalText;
+                    button.classList.remove('bg-green-600', 'hover:bg-green-700');
+                    button.classList.add('bg-orange-600', 'hover:bg-orange-700');
                 }, 2000);
 
             } catch (error) {

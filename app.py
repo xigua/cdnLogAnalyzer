@@ -1984,6 +1984,270 @@ def deep_analysis():
         print(traceback.format_exc())
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/ip-range-analysis', methods=['GET'])
+def ip_range_analysis():
+    """
+    Advanced IP range analysis: identify suspicious C-class subnets where most IPs
+    are static-only but a few (<3) access dynamic content. Also aggregate into
+    larger subnets (/20, /21, B-class) if most C-class subnets in those ranges
+    are predominantly static.
+    """
+    try:
+        # Get min_traffic_mb from query parameter
+        min_traffic_mb = int(request.args.get('min_traffic_mb', 0))
+        min_traffic_bytes = min_traffic_mb * 1024 * 1024
+
+        print(f"IP Range Analysis with min_traffic_mb = {min_traffic_mb} MB ({min_traffic_bytes} bytes)")
+
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Get all IPs with their behavior and traffic
+        cursor.execute("""
+            SELECT
+                ip,
+                is_static_only,
+                static_requests,
+                dynamic_requests,
+                total_requests,
+                total_response_size
+            FROM ip_statistics
+            WHERE total_response_size >= %s
+            ORDER BY ip
+        """, (min_traffic_bytes,))
+
+        all_ips = cursor.fetchall()
+        cursor.close()
+        release_db_connection(conn)
+
+        # Group by C-class subnet
+        c_class_analysis = {}
+
+        for ip_data in all_ips:
+            ip = ip_data['ip']
+            parts = ip.split('.')
+            if len(parts) != 4:
+                continue
+
+            c_class = f"{parts[0]}.{parts[1]}.{parts[2]}"
+
+            if c_class not in c_class_analysis:
+                c_class_analysis[c_class] = {
+                    'c_class': c_class,
+                    'static_only_ips': [],
+                    'dynamic_ips': [],
+                    'total_traffic': 0
+                }
+
+            c_class_analysis[c_class]['total_traffic'] += ip_data['total_response_size']
+
+            if ip_data['is_static_only']:
+                c_class_analysis[c_class]['static_only_ips'].append({
+                    'ip': ip,
+                    'traffic': ip_data['total_response_size']
+                })
+            else:
+                c_class_analysis[c_class]['dynamic_ips'].append({
+                    'ip': ip,
+                    'traffic': ip_data['total_response_size']
+                })
+
+        # Identify suspicious C-class subnets (mostly static, few dynamic)
+        suspicious_c_classes = []
+        individual_ips = []
+
+        for c_class, data in c_class_analysis.items():
+            static_count = len(data['static_only_ips'])
+            dynamic_count = len(data['dynamic_ips'])
+            total_count = static_count + dynamic_count
+
+            # Criteria for suspicious C-class:
+            # 1. Has at least 2 IPs total
+            # 2. Dynamic IPs < 3
+            # 3. Static IPs >= Dynamic IPs (majority are static)
+            if total_count >= 2 and dynamic_count < 3 and static_count >= dynamic_count:
+                ratio = dynamic_count / static_count if static_count > 0 else 0
+                suspicious_c_classes.append({
+                    'c_class': c_class,
+                    'static_count': static_count,
+                    'dynamic_count': dynamic_count,
+                    'total_count': total_count,
+                    'ratio': ratio,
+                    'total_traffic': data['total_traffic']
+                })
+            else:
+                # Add individual IPs from this C-class
+                for ip_info in data['static_only_ips']:
+                    individual_ips.append(ip_info)
+                for ip_info in data['dynamic_ips']:
+                    individual_ips.append(ip_info)
+
+        # Now aggregate suspicious C-classes into larger subnets (/20, /21, B-class)
+        # Group by B-class, /21, /20
+        larger_subnet_groups = {
+            'b_class': {},    # /16
+            'slash_20': {},   # /20
+            'slash_21': {}    # /21
+        }
+
+        for c_data in suspicious_c_classes:
+            c_class = c_data['c_class']
+            parts = c_class.split('.')
+
+            # B-class (/16)
+            b_class = f"{parts[0]}.{parts[1]}"
+            if b_class not in larger_subnet_groups['b_class']:
+                larger_subnet_groups['b_class'][b_class] = []
+            larger_subnet_groups['b_class'][b_class].append(c_data)
+
+            # /21 (8 C-classes)
+            third_octet = int(parts[2])
+            slash_21_base = (third_octet // 8) * 8
+            slash_21 = f"{parts[0]}.{parts[1]}.{slash_21_base}"
+            if slash_21 not in larger_subnet_groups['slash_21']:
+                larger_subnet_groups['slash_21'][slash_21] = []
+            larger_subnet_groups['slash_21'][slash_21].append(c_data)
+
+            # /20 (16 C-classes)
+            slash_20_base = (third_octet // 16) * 16
+            slash_20 = f"{parts[0]}.{parts[1]}.{slash_20_base}"
+            if slash_20 not in larger_subnet_groups['slash_20']:
+                larger_subnet_groups['slash_20'][slash_20] = []
+            larger_subnet_groups['slash_20'][slash_20].append(c_data)
+
+        # Identify larger subnets where majority of C-classes are suspicious
+        aggregated_subnets = []
+        processed_c_classes = set()
+
+        # Check /21 subnets (if >= 4 C-classes out of 8 are suspicious, aggregate)
+        for slash_21, c_classes in larger_subnet_groups['slash_21'].items():
+            if len(c_classes) >= 4:
+                total_traffic = sum(c['total_traffic'] for c in c_classes)
+                total_static = sum(c['static_count'] for c in c_classes)
+                total_dynamic = sum(c['dynamic_count'] for c in c_classes)
+                total_ips = total_static + total_dynamic
+                ratio = total_dynamic / total_static if total_static > 0 else 0
+
+                aggregated_subnets.append({
+                    'subnet': f"{slash_21}.0/21",
+                    'static_count': total_static,
+                    'dynamic_count': total_dynamic,
+                    'total_count': total_ips,
+                    'ratio': ratio,
+                    'total_traffic': total_traffic,
+                    'c_class_count': len(c_classes)
+                })
+
+                # Mark these C-classes as processed
+                for c in c_classes:
+                    processed_c_classes.add(c['c_class'])
+
+        # Check /20 subnets (if >= 8 C-classes out of 16 are suspicious, aggregate)
+        for slash_20, c_classes in larger_subnet_groups['slash_20'].items():
+            if len(c_classes) >= 8:
+                # Skip if already covered by /21
+                if any(c['c_class'] in processed_c_classes for c in c_classes):
+                    continue
+
+                total_traffic = sum(c['total_traffic'] for c in c_classes)
+                total_static = sum(c['static_count'] for c in c_classes)
+                total_dynamic = sum(c['dynamic_count'] for c in c_classes)
+                total_ips = total_static + total_dynamic
+                ratio = total_dynamic / total_static if total_static > 0 else 0
+
+                aggregated_subnets.append({
+                    'subnet': f"{slash_20}.0/20",
+                    'static_count': total_static,
+                    'dynamic_count': total_dynamic,
+                    'total_count': total_ips,
+                    'ratio': ratio,
+                    'total_traffic': total_traffic,
+                    'c_class_count': len(c_classes)
+                })
+
+                # Mark these C-classes as processed
+                for c in c_classes:
+                    processed_c_classes.add(c['c_class'])
+
+        # Add remaining suspicious C-classes that weren't aggregated
+        c_class_entries = []
+        for c_data in suspicious_c_classes:
+            if c_data['c_class'] not in processed_c_classes:
+                c_class_entries.append({
+                    'subnet': f"{c_data['c_class']}.0/24",
+                    'static_count': c_data['static_count'],
+                    'dynamic_count': c_data['dynamic_count'],
+                    'total_count': c_data['total_count'],
+                    'ratio': c_data['ratio'],
+                    'total_traffic': c_data['total_traffic'],
+                    'c_class_count': 1
+                })
+
+        # Combine aggregated and C-class entries, sort by traffic
+        all_subnet_entries = aggregated_subnets + c_class_entries
+        all_subnet_entries.sort(key=lambda x: x['total_traffic'], reverse=True)
+
+        # Sort individual IPs by traffic
+        individual_ips.sort(key=lambda x: x['traffic'], reverse=True)
+
+        # Format output
+        output_lines = []
+
+        # Section 1: Suspicious subnets
+        if all_subnet_entries:
+            output_lines.append("# === Suspicious IP Ranges (mostly static, few dynamic) ===")
+            output_lines.append("# Format: Subnet    Traffic(MB)    Total_IPs    Static_IPs    Dynamic_IPs    Ratio    C-Classes")
+
+            for entry in all_subnet_entries:
+                traffic_mb = entry['total_traffic'] / (1024 * 1024)
+                subnet_str = entry['subnet']
+                output_lines.append(
+                    f"{subnet_str:<20} {traffic_mb:>10.2f} MB    "
+                    f"{entry['total_count']:>4} IPs    "
+                    f"{entry['static_count']:>4} static    "
+                    f"{entry['dynamic_count']:>4} dynamic    "
+                    f"{entry['ratio']:>6.3f}    "
+                    f"{entry['c_class_count']:>2} C-classes"
+                )
+            output_lines.append("")
+
+        # Section 2: Individual IPs
+        if individual_ips:
+            output_lines.append("# === Individual IPs (not in suspicious ranges) ===")
+            output_lines.append("# Format: IP_Address    Traffic(MB)")
+
+            current_tier_mb = None
+            for ip_info in individual_ips:
+                traffic_mb = ip_info['traffic'] / (1024 * 1024)
+
+                # Add tier markers
+                if traffic_mb >= 100:
+                    tier_mb = (int(traffic_mb) // 100) * 100
+                else:
+                    tier_mb = (int(traffic_mb) // 10) * 10
+
+                if tier_mb != current_tier_mb:
+                    if current_tier_mb is not None:
+                        output_lines.append("")
+                    output_lines.append(f"# Traffic >= {tier_mb} MB")
+                    current_tier_mb = tier_mb
+
+                output_lines.append(f"{ip_info['ip']:<20} {traffic_mb:>10.2f} MB")
+
+        return jsonify({
+            'analysis_lines': output_lines,
+            'suspicious_subnet_count': len(all_subnet_entries),
+            'individual_ip_count': len(individual_ips),
+            'total_entries': len(all_subnet_entries) + len(individual_ips),
+            'min_traffic_mb': min_traffic_mb
+        })
+
+    except Exception as e:
+        import traceback
+        print(f"Error in IP range analysis: {str(e)}")
+        print(traceback.format_exc())
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/api/ip-logs/<ip>', methods=['GET'])
 def get_ip_logs(ip):
     """Get all log entries for a specific IP address"""
