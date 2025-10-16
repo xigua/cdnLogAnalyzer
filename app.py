@@ -1959,6 +1959,30 @@ def get_static_only_ips():
 
         ip_behaviors = {row[0]: {'dynamic_requests': row[1]} for row in cursor.fetchall()}
 
+        # Get mixed traffic IPs (both static and dynamic content access)
+        cursor.execute("""
+            SELECT ip, total_response_size
+            FROM ip_statistics
+            WHERE static_requests > 0 AND dynamic_requests > 0 AND total_response_size >= %s
+            ORDER BY total_response_size DESC
+        """, (min_traffic_bytes,))
+
+        mixed_traffic_data = [(row[0], row[1]) for row in cursor.fetchall()]
+        mixed_traffic_ips = [row[0] for row in mixed_traffic_data]
+        mixed_traffic_map = {row[0]: row[1] for row in mixed_traffic_data}
+
+        # Get dynamic-only IPs (only dynamic content access)
+        cursor.execute("""
+            SELECT ip, total_response_size
+            FROM ip_statistics
+            WHERE static_requests = 0 AND dynamic_requests > 0 AND total_response_size >= %s
+            ORDER BY total_response_size DESC
+        """, (min_traffic_bytes,))
+
+        dynamic_only_data = [(row[0], row[1]) for row in cursor.fetchall()]
+        dynamic_only_ips = [row[0] for row in dynamic_only_data]
+        dynamic_only_map = {row[0]: row[1] for row in dynamic_only_data}
+
         cursor.close()
         release_db_connection(conn)
 
@@ -2039,6 +2063,72 @@ def get_static_only_ips():
 
                 # Format: "222.216.37.7         1234.56 MB      1 IPs"
                 blacklist_entries.append(f"{ip:<20} {traffic_mb:>10.2f} MB    {1:>3} IPs")
+
+        # Add Section 3: Mixed traffic IPs (both static and dynamic content)
+        if mixed_traffic_ips:
+            blacklist_entries.append("")
+            blacklist_entries.append("")
+            blacklist_entries.append("# ============================================")
+            blacklist_entries.append("# === Mixed Traffic IPs (Static + Dynamic) ===")
+            blacklist_entries.append("# ============================================")
+            blacklist_entries.append("# These IPs access both static and dynamic content")
+            blacklist_entries.append("# Sorted by total traffic (highest first)")
+            blacklist_entries.append("# Format: IP_Address    Traffic(MB)")
+            blacklist_entries.append("")
+
+            current_tier_mb = None
+            for ip in mixed_traffic_ips:
+                traffic_bytes = mixed_traffic_map.get(ip, 0)
+                traffic_mb = traffic_bytes / (1024 * 1024)
+
+                # Determine tier based on traffic
+                if traffic_mb >= 100:
+                    tier_mb = (int(traffic_mb) // 100) * 100
+                else:
+                    tier_mb = (int(traffic_mb) // 10) * 10
+
+                # Add comment when entering a new traffic tier
+                if tier_mb != current_tier_mb:
+                    if current_tier_mb is not None:
+                        blacklist_entries.append("")
+                    blacklist_entries.append(f"# Traffic >= {tier_mb} MB")
+                    current_tier_mb = tier_mb
+
+                # Format: "222.216.37.7         1234.56 MB"
+                blacklist_entries.append(f"# {ip:<20} {traffic_mb:>10.2f} MB")
+
+        # Add Section 4: Dynamic-only traffic IPs
+        if dynamic_only_ips:
+            blacklist_entries.append("")
+            blacklist_entries.append("")
+            blacklist_entries.append("# ============================================")
+            blacklist_entries.append("# === Dynamic-Only Traffic IPs ===")
+            blacklist_entries.append("# ============================================")
+            blacklist_entries.append("# These IPs only access dynamic content (APIs, etc.)")
+            blacklist_entries.append("# Sorted by total traffic (highest first)")
+            blacklist_entries.append("# Format: IP_Address    Traffic(MB)")
+            blacklist_entries.append("")
+
+            current_tier_mb = None
+            for ip in dynamic_only_ips:
+                traffic_bytes = dynamic_only_map.get(ip, 0)
+                traffic_mb = traffic_bytes / (1024 * 1024)
+
+                # Determine tier based on traffic
+                if traffic_mb >= 100:
+                    tier_mb = (int(traffic_mb) // 100) * 100
+                else:
+                    tier_mb = (int(traffic_mb) // 10) * 10
+
+                # Add comment when entering a new traffic tier
+                if tier_mb != current_tier_mb:
+                    if current_tier_mb is not None:
+                        blacklist_entries.append("")
+                    blacklist_entries.append(f"# Traffic >= {tier_mb} MB")
+                    current_tier_mb = tier_mb
+
+                # Format: "222.216.37.7         1234.56 MB"
+                blacklist_entries.append(f"# {ip:<20} {traffic_mb:>10.2f} MB")
 
         # Count only actual IPs/CIDR blocks (exclude comments and blank lines)
         actual_entries = [e for e in blacklist_entries if e and not e.startswith('#')]
@@ -2468,11 +2558,22 @@ def get_ip_statistics():
         if not prefix:
             return jsonify({'error': 'Prefix parameter is required'}), 400
 
+        dynamic_only = request.args.get('dynamic_only', 'false').lower() == 'true'
+
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
+        # Build WHERE clause based on filters
+        where_conditions = ["ip LIKE %s"]
+        params = [f"{prefix}%"]
+
+        if dynamic_only:
+            where_conditions.append("dynamic_requests > 0")
+
+        where_clause = " AND ".join(where_conditions)
+
         # Query with LIKE pattern, excluding requests_per_minute and updated_at
-        cursor.execute("""
+        query = f"""
             SELECT
                 ip,
                 total_requests,
@@ -2486,10 +2587,12 @@ def get_ip_statistics():
                 first_seen,
                 last_seen
             FROM ip_statistics
-            WHERE ip LIKE %s
+            WHERE {where_clause}
             ORDER BY total_response_size DESC
-            LIMIT 100
-        """, (f"{prefix}%",))
+            LIMIT 5000
+        """
+
+        cursor.execute(query, params)
 
         statistics = cursor.fetchall()
         cursor.close()
@@ -2497,6 +2600,7 @@ def get_ip_statistics():
 
         return jsonify({
             'prefix': prefix,
+            'dynamic_only': dynamic_only,
             'count': len(statistics),
             'statistics': [dict(stat) for stat in statistics]
         })

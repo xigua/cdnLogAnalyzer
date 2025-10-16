@@ -413,7 +413,7 @@
                 <div class="bg-white rounded-lg shadow-xl w-full max-w-6xl" style="max-height: 90vh; display: flex; flex-direction: column;">
                     <div class="p-6 border-b">
                         <h2 class="text-2xl font-semibold mb-4">IP Statistics Query</h2>
-                        <div class="flex gap-2">
+                        <div class="flex gap-2 mb-3">
                             <input type="text" id="ipPrefixInput" placeholder="Enter IP prefix (e.g., 14.20.4.)"
                                    class="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
                                    onkeypress="if(event.key==='Enter') searchIPStatistics()">
@@ -421,6 +421,13 @@
                                     class="px-6 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2">
                                 Search
                             </button>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <input type="checkbox" id="dynamicOnlyCheckbox"
+                                   class="w-4 h-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500">
+                            <label for="dynamicOnlyCheckbox" class="text-sm text-gray-700 cursor-pointer">
+                                Dynamic only (only show IPs that accessed dynamic content)
+                            </label>
                         </div>
                     </div>
 
@@ -1941,6 +1948,8 @@
                 return;
             }
 
+            const dynamicOnly = document.getElementById('dynamicOnlyCheckbox').checked;
+
             const loading = document.getElementById('ipStatisticsLoading');
             const content = document.getElementById('ipStatisticsContent');
 
@@ -1948,7 +1957,8 @@
             content.innerHTML = '';
 
             try {
-                const response = await fetch(`/api/ip-statistics?prefix=${encodeURIComponent(prefix)}`);
+                const url = `/api/ip-statistics?prefix=${encodeURIComponent(prefix)}&dynamic_only=${dynamicOnly}`;
+                const response = await fetch(url);
                 const data = await response.json();
 
                 loading.style.display = 'none';
@@ -1958,14 +1968,16 @@
                 }
 
                 if (!data.statistics || data.statistics.length === 0) {
-                    content.innerHTML = '<p class="text-gray-500 text-center py-8">No IPs found matching this prefix</p>';
+                    const filterMsg = dynamicOnly ? ' (with dynamic content access)' : '';
+                    content.innerHTML = `<p class="text-gray-500 text-center py-8">No IPs found matching this prefix${filterMsg}</p>`;
                     return;
                 }
 
                 // Create table
+                const filterMsg = dynamicOnly ? ' <span class="text-indigo-600">(dynamic only)</span>' : '';
                 let html = `
                     <div class="mb-4 text-sm text-gray-600">
-                        Found <span class="font-semibold">${data.statistics.length}</span> IP(s) matching prefix "<span class="font-mono font-semibold">${prefix}</span>"
+                        Found <span class="font-semibold">${data.statistics.length}</span> IP(s) matching prefix "<span class="font-mono font-semibold">${prefix}</span>"${filterMsg}
                     </div>
                     <div class="overflow-x-auto">
                         <table class="min-w-full divide-y divide-gray-200">
