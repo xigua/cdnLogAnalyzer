@@ -31,13 +31,16 @@ class DecimalEncoder(json.JSONEncoder):
             return float(obj)
         return super(DecimalEncoder, self).default(obj)
 
-# Database configuration
+# Database configuration - supports multiple sites via environment variables
+DB_NAME = os.environ.get('CDN_DB_NAME', 'cdn_logs')
+APP_PORT = int(os.environ.get('PORT', '8080'))
+
 DB_CONFIG = {
     'host': '127.0.0.1',
     'port': 5432,
     'user': 'postgres',
     'password': 'postgres',
-    'database': 'cdn_logs'
+    'database': DB_NAME
 }
 
 # Connection pool
@@ -47,7 +50,7 @@ def init_db():
     """Initialize database and create tables"""
     global db_pool
 
-    # First connect to default postgres database to create cdn_logs database
+    # First connect to default postgres database to create target database
     conn = psycopg2.connect(
         host=DB_CONFIG['host'],
         port=DB_CONFIG['port'],
@@ -59,15 +62,15 @@ def init_db():
     cursor = conn.cursor()
 
     # Check if database exists
-    cursor.execute("SELECT 1 FROM pg_database WHERE datname = 'cdn_logs'")
+    cursor.execute("SELECT 1 FROM pg_database WHERE datname = %s", (DB_NAME,))
     if not cursor.fetchone():
-        cursor.execute("CREATE DATABASE cdn_logs")
-        print("Database 'cdn_logs' created successfully")
+        cursor.execute(f"CREATE DATABASE {DB_NAME}")
+        print(f"Database '{DB_NAME}' created successfully")
 
     cursor.close()
     conn.close()
 
-    # Now connect to cdn_logs database
+    # Now connect to target database
     db_pool = SimpleConnectionPool(1, 20, **DB_CONFIG)
 
     conn = db_pool.getconn()
@@ -2712,5 +2715,7 @@ def get_geo_location_by_ip():
 if __name__ == '__main__':
     # Initialize database
     init_db()
-    print("Starting CDN Log Analyzer...")
-    app.run(debug=True, host='0.0.0.0', port=8080)
+    print(f"Starting CDN Log Analyzer...")
+    print(f"Database: {DB_NAME}")
+    print(f"Server: http://0.0.0.0:{APP_PORT}")
+    app.run(debug=True, host='0.0.0.0', port=APP_PORT)

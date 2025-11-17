@@ -13,7 +13,9 @@ Ensure PostgreSQL is running on `127.0.0.1:5432` with:
 - Username: `postgres`
 - Password: `postgres`
 
-The database `cdn_logs` will be created automatically on first run.
+Databases will be created automatically on first run:
+- Default: `cdn_logs`
+- For other sites, specify via `CDN_DB_NAME` environment variable
 
 ### Installing Dependencies
 ```bash
@@ -21,10 +23,41 @@ pip3 install -r requirements.txt
 ```
 
 ### Running the Application
+
+**Single Site (Default)**
 ```bash
 python3 app.py
 ```
-The app runs on `http://0.0.0.0:8080` by default. Database tables are initialized automatically on startup.
+The app runs on `http://0.0.0.0:8080` by default with database `cdn_logs`. Database tables are initialized automatically on startup.
+
+**Multiple Sites (Different Databases)**
+
+To analyze logs from different sites simultaneously, run multiple instances with different databases and ports:
+
+```bash
+# Site A (default)
+python3 app.py
+
+# Site B (in a new terminal)
+CDN_DB_NAME=cdn_logs_2 PORT=8081 python3 app.py
+
+# Site C (in another terminal)
+CDN_DB_NAME=cdn_logs_3 PORT=8082 python3 app.py
+```
+
+**Environment Variables:**
+- `CDN_DB_NAME` - Database name (default: `cdn_logs`)
+- `PORT` - Web server port (default: `8080`)
+
+Each instance will:
+- Create and use its own database
+- Run on its own port
+- Maintain separate log data and statistics
+
+Access the instances at:
+- Site A: `http://localhost:8080`
+- Site B: `http://localhost:8081`
+- Site C: `http://localhost:8082`
 
 ## Architecture
 
@@ -94,7 +127,7 @@ The analyzer uses SSE to stream progress:
 
 ### Database Architecture
 
-**PostgreSQL Database: `cdn_logs`**
+**PostgreSQL Database: `cdn_logs` (configurable via `CDN_DB_NAME`)**
 
 Two main tables:
 
