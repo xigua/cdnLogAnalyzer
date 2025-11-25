@@ -8,16 +8,56 @@ CDN Log Analyzer is a Flask web application that analyzes CDN access logs from g
 
 ## Commands
 
-### Running the Application
-```bash
-python3 app.py
-```
-The app runs on `http://0.0.0.0:8080` by default.
+### Prerequisites
+Ensure PostgreSQL is running on `127.0.0.1:5432` with:
+- Username: `postgres`
+- Password: `postgres`
+
+Databases will be created automatically on first run:
+- Default: `cdn_logs`
+- For other sites, specify via `CDN_DB_NAME` environment variable
 
 ### Installing Dependencies
 ```bash
-pip install -r requirements.txt
+pip3 install -r requirements.txt
 ```
+
+### Running the Application
+
+**Single Site (Default)**
+```bash
+python3 app.py
+```
+The app runs on `http://0.0.0.0:8080` by default with database `cdn_logs`. Database tables are initialized automatically on startup.
+
+**Multiple Sites (Different Databases)**
+
+To analyze logs from different sites simultaneously, run multiple instances with different databases and ports:
+
+```bash
+# Site A (default)
+python3 app.py
+
+# Site B (in a new terminal)
+CDN_DB_NAME=cdn_logs_2 PORT=8081 python3 app.py
+
+# Site C (in another terminal)
+CDN_DB_NAME=cdn_logs_3 PORT=8082 python3 app.py
+```
+
+**Environment Variables:**
+- `CDN_DB_NAME` - Database name (default: `cdn_logs`)
+- `PORT` - Web server port (default: `8080`)
+
+Each instance will:
+- Create and use its own database
+- Run on its own port
+- Maintain separate log data and statistics
+
+Access the instances at:
+- Site A: `http://localhost:8080`
+- Site B: `http://localhost:8081`
+- Site C: `http://localhost:8082`
 
 ## Architecture
 
@@ -85,8 +125,37 @@ The analyzer uses SSE to stream progress:
 - Provides estimated remaining time based on processing speed
 - Tracks current file, file count, and analysis step
 
-### Global State
-`global_log_entries` (app.py:768) stores all parsed log entries in memory after analysis to support detail queries. This means:
-- Memory usage scales with log file size
-- IP details and blacklist generation require prior analysis
-- Data persists only for the current server instance
+### Database Architecture
+
+**PostgreSQL Database: `cdn_logs` (configurable via `CDN_DB_NAME`)**
+
+Two main tables:
+
+1. **`log_entries`** - Stores all individual CDN log entries
+   - Indexed on `ip` and `timestamp` for fast queries
+   - Contains: timestamp, IP, response_time, method, URL, status codes, bytes_sent, cache_status, user_agent, etc.
+
+2. **`ip_statistics`** - Pre-aggregated IP statistics for faster analysis
+   - Primary key: `ip`
+   - Calculated fields: total_requests, total_bytes_sent, unique_urls, unique_user_agents
+   - Static vs dynamic classification: `static_requests`, `dynamic_requests`, `is_static_only`
+   - Time tracking: `first_seen`, `last_seen`, `requests_per_minute`
+   - Updated via `calculate_and_store_ip_statistics()` after log import
+
+**Log Processing Flow:**
+1. Parse `.gz` files line by line
+2. Batch insert to `log_entries` (1000 records at a time)
+3. Calculate and store IP statistics in `ip_statistics` table
+4. Run analysis queries against database tables
+
+**Benefits:**
+- Handles large datasets (7+ days of logs) without memory issues
+- Persistent storage - data survives server restarts
+- Fast queries via indexes and pre-aggregated statistics
+- IP details fetched on-demand from database
+
+**API Endpoints Using Database:**
+- `/api/db-stats` - Returns total logs count and time range
+- `/api/ip-details` - Queries log_entries for specific IP
+- `/api/static-only-ips` - Reads from ip_statistics table
+- All analysis functions read from database instead of memory

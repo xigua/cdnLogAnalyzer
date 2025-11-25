@@ -18,52 +18,433 @@
     <div class="container mx-auto px-4 py-8">
         <h1 class="text-4xl font-bold text-center mb-8 text-gray-800">CDN Log Analyzer</h1>
 
-        <!-- Directory Selection -->
+        <!-- Database Statistics -->
+        <div id="dbStatsContainer" class="bg-white rounded-lg shadow-lg p-6 mb-8">
+            <h2 class="text-2xl font-semibold mb-4">Database Statistics</h2>
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div class="bg-blue-50 rounded-lg p-4">
+                    <div class="text-sm text-gray-600 mb-1">Total Logs in Database</div>
+                    <div class="text-2xl font-bold text-blue-600" id="dbTotalLogs">-</div>
+                </div>
+                <div class="bg-green-50 rounded-lg p-4">
+                    <div class="text-sm text-gray-600 mb-1">First Log</div>
+                    <div class="text-lg font-semibold text-green-600" id="dbStartTime">-</div>
+                </div>
+                <div class="bg-purple-50 rounded-lg p-4">
+                    <div class="text-sm text-gray-600 mb-1">Last Log</div>
+                    <div class="text-lg font-semibold text-purple-600" id="dbEndTime">-</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Action Buttons -->
         <div class="bg-white rounded-lg shadow-lg p-6 mb-8">
-            <h2 class="text-2xl font-semibold mb-4">Select Log Directory</h2>
+            <h2 class="text-2xl font-semibold mb-4">Actions</h2>
             <div class="flex gap-4">
-                <input type="text" id="directoryPath"
-                       placeholder="Enter directory path (e.g., /path/to/logs)"
-                       class="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent">
-                <button onclick="analyzeDirectory()"
+                <button onclick="showLoadDialog()"
+                        class="px-6 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 focus:ring-2 focus:ring-green-500 focus:ring-offset-2">
+                    📥 Load Logs
+                </button>
+                <button onclick="showAnalyzeDialog()"
                         class="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 focus:ring-2 focus:ring-blue-500 focus:ring-offset-2">
-                    Analyze Logs
+                    📊 Analyze Logs
+                </button>
+                <button onclick="showBlacklistDialog()"
+                        class="px-6 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 focus:ring-2 focus:ring-red-500 focus:ring-offset-2">
+                    🚫 Generate IP Blacklist
+                </button>
+                <button onclick="showRangeAnalysisDialog()"
+                        class="px-6 py-2 bg-yellow-600 text-white rounded-lg hover:bg-orange-700 focus:ring-2 focus:ring-orange-500 focus:ring-offset-2">
+                    📡 IP Range Analysis
+                </button>
+                <button onclick="showDeepAnalysis()"
+                        class="px-6 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 focus:ring-2 focus:ring-purple-500 focus:ring-offset-2">
+                    🔍 Deep Analysis
+                </button>
+                <button onclick="showIPStatistics()"
+                        class="px-6 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2">
+                    📊 Show IP Statistics
                 </button>
             </div>
-            <div id="loadingIndicator" class="hidden mt-4">
-                <div class="text-center mb-4">
-                    <div class="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
-                    <span class="ml-2 text-gray-600">Processing log files...</span>
+        </div>
+
+        <!-- Load Logs Modal -->
+        <div id="loadModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
+            <div class="bg-white rounded-lg shadow-xl p-8 max-w-2xl w-full mx-4">
+                <h2 class="text-2xl font-semibold mb-4">Load Log Files</h2>
+                <div class="mb-4">
+                    <label class="block text-sm font-medium text-gray-700 mb-2">Log Directory Path</label>
+                    <input type="text" id="directoryPath"
+                           placeholder="/path/to/logs"
+                           class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent">
+                </div>
+                <div id="loadingIndicator" class="hidden mt-4">
+                    <div class="text-center mb-4">
+                        <div class="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-green-600"></div>
+                        <span class="ml-2 text-gray-600">Loading log files...</span>
+                    </div>
+                    <div class="bg-gray-200 rounded-full h-4 mb-2">
+                        <div id="progressBar" class="bg-green-600 h-4 rounded-full transition-all duration-300" style="width: 0%"></div>
+                    </div>
+                    <div class="flex justify-between text-sm text-gray-600 mb-2">
+                        <span id="progressText">Initializing...</span>
+                        <span id="progressPercentage">0%</span>
+                    </div>
+                    <div class="bg-gray-50 rounded-lg p-3 text-sm">
+                        <div class="flex justify-between mb-1">
+                            <span>Files processed:</span>
+                            <span id="fileProgress">0 / 0</span>
+                        </div>
+                        <div class="flex justify-between mb-1">
+                            <span>Current file:</span>
+                            <span id="currentFile">-</span>
+                        </div>
+                        <div class="flex justify-between mb-1">
+                            <span>Estimated time remaining:</span>
+                            <span id="timeRemaining">Calculating...</span>
+                        </div>
+                        <div class="flex justify-between">
+                            <span>Elapsed time:</span>
+                            <span id="elapsedTime">0s</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="flex gap-4 mt-6">
+                    <button onclick="startLoadLogs()" id="loadButton"
+                            class="flex-1 px-6 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700">
+                        Start Loading
+                    </button>
+                    <button onclick="closeLoadDialog()"
+                            class="px-6 py-2 bg-gray-300 text-gray-700 rounded-lg hover:bg-gray-400">
+                        Cancel
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Analyze Modal -->
+        <div id="analyzeModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
+            <div class="bg-white rounded-lg shadow-xl p-8 max-w-2xl w-full mx-4">
+                <h2 class="text-2xl font-semibold mb-4">Analyze Logs</h2>
+                <div class="grid grid-cols-2 gap-4 mb-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">Start Time</label>
+                        <input type="datetime-local" id="startTime"
+                               class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">End Time</label>
+                        <input type="datetime-local" id="endTime"
+                               class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500">
+                    </div>
+                </div>
+                <div id="analyzeLoading" class="hidden mt-4">
+                    <div class="mb-2">
+                        <div class="w-full bg-gray-200 rounded-full h-4 overflow-hidden">
+                            <div id="analyzeProgressBar" class="bg-blue-600 h-4 rounded-full transition-all duration-300" style="width: 0%"></div>
+                        </div>
+                    </div>
+                    <p id="analyzeProgressText" class="text-sm text-gray-600 text-center">Starting analysis...</p>
+                </div>
+                <div class="flex gap-4 mt-6">
+                    <button onclick="startAnalyze()" id="analyzeButton"
+                            class="flex-1 px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700">
+                        Start Analysis
+                    </button>
+                    <button onclick="closeAnalyzeDialog()"
+                            class="px-6 py-2 bg-gray-300 text-gray-700 rounded-lg hover:bg-gray-400">
+                        Cancel
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Blacklist Dialog -->
+        <div id="blacklistModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
+            <div class="bg-white rounded-lg shadow-xl p-8 max-w-4xl w-full mx-4 h-screen overflow-hidden flex flex-col">
+                <h2 class="text-2xl font-semibold mb-4">IP Blacklist Generator</h2>
+
+                <!-- Traffic Filter Input -->
+                <div class="mb-4">
+                    <label class="block text-sm font-medium text-gray-700 mb-2">
+                        Minimum Traffic Threshold (MB)
+                        <span class="text-xs text-gray-500 font-normal">- Only include static-only IPs with traffic ≥ this value</span>
+                    </label>
+                    <div class="flex gap-2">
+                        <input type="number" id="blacklistMinTrafficMB" min="0" step="1" value="0"
+                               class="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                               placeholder="Enter minimum traffic in MB (0 = all IPs)">
+                        <button onclick="loadBlacklistData()"
+                                class="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 focus:ring-2 focus:ring-blue-500">
+                            Apply Filter
+                        </button>
+                    </div>
                 </div>
 
-                <!-- Progress Bar -->
-                <div class="bg-gray-200 rounded-full h-4 mb-2">
-                    <div id="progressBar" class="bg-blue-600 h-4 rounded-full transition-all duration-300" style="width: 0%"></div>
+                <!-- Statistics Summary -->
+                <div id="blacklistStats" class="grid grid-cols-3 gap-4 mb-4 p-4 bg-gray-50 rounded-lg">
+                    <div class="text-center">
+                        <div class="text-2xl font-bold text-blue-600" id="blacklistTotal">-</div>
+                        <div class="text-sm text-gray-600">Total Entries</div>
+                    </div>
+                    <div class="text-center">
+                        <div class="text-2xl font-bold text-green-600" id="blacklistOriginal">-</div>
+                        <div class="text-sm text-gray-600">Original IPs</div>
+                    </div>
+                    <div class="text-center">
+                        <div class="text-2xl font-bold text-purple-600" id="blacklistOptimized">-</div>
+                        <div class="text-sm text-gray-600">CIDR Blocks</div>
+                    </div>
                 </div>
 
-                <!-- Progress Info -->
-                <div class="flex justify-between text-sm text-gray-600 mb-2">
-                    <span id="progressText">Initializing...</span>
-                    <span id="progressPercentage">0%</span>
+                <div class="text-sm text-gray-600 mb-4">
+                    <p><strong>How to use:</strong></p>
+                    <ol class="mt-1 ml-4 list-decimal space-y-1">
+                        <li>Set minimum traffic threshold (MB) - only IPs with traffic ≥ this value will be included</li>
+                        <li>Click "Apply Filter" to generate the blacklist</li>
+                        <li>Adjust the threshold and regenerate as needed</li>
+                    </ol>
+                    <p class="mt-2 text-xs text-gray-500">
+                        <strong>Format:</strong> C-class subnets with 2+ static-only IPs → /24 CIDR blocks | Individual IPs sorted by traffic (highest first) with tier markers (≥100MB: per 100MB, <100MB: per 10MB)
+                    </p>
+                    <p class="mt-1 text-xs text-gray-500">
+                        <strong>Columns:</strong> Each entry shows: <code>IP/CIDR &nbsp; Traffic(MB) &nbsp; IP_Count</code>
+                    </p>
+                    <p class="mt-2" id="blacklistFilterInfo"><span class="font-medium">Status:</span> Ready to generate</p>
                 </div>
 
-                <!-- File Progress Details -->
-                <div class="bg-gray-50 rounded-lg p-3 text-sm">
-                    <div class="flex justify-between mb-1">
-                        <span>Files processed:</span>
-                        <span id="fileProgress">0 / 0</span>
+                <!-- IP List -->
+                <div class="flex-1 overflow-hidden flex flex-col">
+                    <div class="flex justify-between items-center mb-2">
+                        <label class="text-sm font-medium text-gray-700">IP Blacklist:</label>
+                        <button onclick="copyBlacklistToClipboard()"
+                                id="copyBlacklistBtn"
+                                class="px-4 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 focus:ring-2 focus:ring-blue-500">
+                            📋 Copy to Clipboard
+                        </button>
                     </div>
-                    <div class="flex justify-between mb-1">
-                        <span>Current file:</span>
-                        <span id="currentFile">-</span>
+                    <textarea id="blacklistContent"
+                              class="flex-1 w-full px-4 py-2 border border-gray-300 rounded-lg font-mono text-sm resize-none focus:ring-2 focus:ring-blue-500"
+                              readonly></textarea>
+                </div>
+
+                <div class="flex gap-4 mt-6">
+                    <button onclick="closeBlacklistDialog()"
+                            class="flex-1 px-6 py-2 bg-gray-300 text-gray-700 rounded-lg hover:bg-gray-400">
+                        Close
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- IP Range Analysis Dialog -->
+        <div id="rangeAnalysisModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
+            <div class="bg-white rounded-lg shadow-xl p-8 max-w-6xl w-full mx-4 h-screen overflow-hidden flex flex-col">
+                <h2 class="text-2xl font-semibold mb-4">IP Range Analysis</h2>
+
+                <!-- Server-side Traffic Filter Input -->
+                <div class="mb-4">
+                    <label class="block text-sm font-medium text-gray-700 mb-2">
+                        Server-side Minimum Traffic Threshold (MB)
+                        <span class="text-xs text-gray-500 font-normal">- Only include IPs with traffic ≥ this value (requires re-analysis)</span>
+                    </label>
+                    <div class="flex gap-2">
+                        <input type="number" id="rangeAnalysisMinTrafficMB" min="0" step="1" value="0"
+                               class="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                               placeholder="Enter minimum traffic in MB (0 = all IPs)">
+                        <button onclick="loadRangeAnalysisData()"
+                                class="px-6 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700 focus:ring-2 focus:ring-orange-500">
+                            Apply Filter
+                        </button>
                     </div>
-                    <div class="flex justify-between mb-1">
-                        <span>Estimated time remaining:</span>
-                        <span id="timeRemaining">Calculating...</span>
+                </div>
+
+                <!-- Client-side Traffic Filter -->
+                <div class="mb-4 border-t pt-4">
+                    <label class="block text-sm font-medium text-gray-700 mb-2">
+                        Client-side Traffic Filter (MB)
+                        <span class="text-xs text-gray-500 font-normal">- Filter existing results by traffic (instant, no re-analysis)</span>
+                    </label>
+                    <div class="flex gap-2">
+                        <input type="number" id="rangeAnalysisClientFilterMB" min="0" step="1" value="0"
+                               class="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500"
+                               placeholder="Enter minimum traffic in MB (0 = show all)">
+                        <button onclick="applyClientSideTrafficFilter()"
+                                class="px-6 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 focus:ring-2 focus:ring-green-500">
+                            Filter
+                        </button>
+                        <button onclick="resetClientSideFilter()"
+                                class="px-6 py-2 bg-gray-500 text-white rounded-lg hover:bg-gray-600 focus:ring-2 focus:ring-gray-500">
+                            Reset
+                        </button>
                     </div>
-                    <div class="flex justify-between">
-                        <span>Elapsed time:</span>
-                        <span id="elapsedTime">0s</span>
+                </div>
+
+                <!-- Statistics Summary -->
+                <div id="rangeAnalysisStats" class="grid grid-cols-3 gap-4 mb-4 p-4 bg-gray-50 rounded-lg">
+                    <div class="text-center">
+                        <div class="text-2xl font-bold text-blue-600" id="rangeAnalysisTotal">-</div>
+                        <div class="text-sm text-gray-600">Total Entries</div>
+                    </div>
+                    <div class="text-center">
+                        <div class="text-2xl font-bold text-orange-600" id="rangeAnalysisSubnets">-</div>
+                        <div class="text-sm text-gray-600">Suspicious Subnets</div>
+                    </div>
+                    <div class="text-center">
+                        <div class="text-2xl font-bold text-green-600" id="rangeAnalysisIndividual">-</div>
+                        <div class="text-sm text-gray-600">Individual IPs</div>
+                    </div>
+                </div>
+
+                <div class="text-sm text-gray-600 mb-4">
+                    <p><strong>About this analysis:</strong></p>
+                    <ul class="mt-1 ml-4 list-disc space-y-1">
+                        <li>Identifies C-class subnets where most IPs access only static content, but a few (&lt;3) access dynamic content</li>
+                        <li>Aggregates into larger subnets (/20, /21) if majority of C-classes are suspicious</li>
+                        <li>Shows dynamic/static ratio for each subnet</li>
+                        <li>Lists individual IPs not in suspicious ranges</li>
+                    </ul>
+                    <p class="mt-2 text-xs text-gray-500">
+                        <strong>Columns:</strong> Subnet, Traffic(MB), Total_IPs, Static_IPs, Dynamic_IPs, Ratio (dynamic/static), C-Classes
+                    </p>
+                    <p class="mt-2" id="rangeAnalysisFilterInfo"><span class="font-medium">Status:</span> Ready to analyze</p>
+                </div>
+
+                <!-- Analysis Results -->
+                <div class="flex-1 overflow-hidden flex flex-col">
+                    <div class="flex justify-between items-center mb-2">
+                        <label class="text-sm font-medium text-gray-700">Analysis Results:</label>
+                        <button onclick="copyRangeAnalysisToClipboard()"
+                                id="copyRangeAnalysisBtn"
+                                class="px-4 py-2 bg-orange-600 text-white text-sm rounded-lg hover:bg-orange-700 focus:ring-2 focus:ring-orange-500">
+                            📋 Copy to Clipboard
+                        </button>
+                    </div>
+                    <textarea id="rangeAnalysisContent"
+                              class="flex-1 w-full px-4 py-2 border border-gray-300 rounded-lg font-mono text-sm resize-none focus:ring-2 focus:ring-orange-500"
+                              readonly></textarea>
+                </div>
+
+                <div class="flex gap-4 mt-6">
+                    <button onclick="closeRangeAnalysisDialog()"
+                            class="flex-1 px-6 py-2 bg-gray-300 text-gray-700 rounded-lg hover:bg-gray-400">
+                        Close
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Deep Analysis Dialog -->
+        <div id="deepAnalysisModal" class="fixed inset-0 bg-black bg-opacity-50 hidden z-50" style="display: none;">
+            <div class="flex items-center justify-center min-h-screen p-4">
+                <div class="bg-white rounded-lg shadow-xl w-full max-w-7xl" style="max-height: 90vh; display: flex; flex-direction: column;">
+                    <div class="p-6 border-b">
+                        <h2 class="text-2xl font-semibold mb-2">Deep Analysis: C-Class Subnet Breakdown</h2>
+                        <p class="text-sm text-gray-600">
+                            This shows C-class subnets with 4+ static-only IPs that are <strong>NOT</strong> converted to /24 blocks.
+                            These subnets have at least one IP accessing dynamic content (shown in red), preventing /24 conversion.
+                            Click on any IP to view its detailed access logs and verify if it's legitimate or should be blocked.
+                        </p>
+                    </div>
+
+                    <!-- Loading indicator -->
+                    <div id="deepAnalysisLoading" class="text-center py-8 hidden">
+                        <div class="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-purple-600"></div>
+                        <span class="ml-2 text-gray-600">Analyzing subnets...</span>
+                    </div>
+
+                    <!-- Results table -->
+                    <div id="deepAnalysisResults" class="hidden" style="flex: 1; overflow: auto; min-height: 0;">
+                        <table class="w-full text-sm">
+                            <thead class="bg-gray-100 sticky top-0">
+                                <tr>
+                                    <th class="px-4 py-2 text-left">C-Class Subnet<br><span class="text-xs font-normal text-gray-600">(Static-only Count)</span></th>
+                                    <th class="px-4 py-2 text-left">Static-Only IPs</th>
+                                    <th class="px-4 py-2 text-left">Mixed IPs (Access Dynamic Content)</th>
+                                </tr>
+                            </thead>
+                            <tbody id="deepAnalysisTableBody">
+                                <!-- Will be populated by JavaScript -->
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <div class="p-6 border-t">
+                        <button onclick="closeDeepAnalysis()"
+                                class="px-6 py-2 bg-gray-300 text-gray-700 rounded-lg hover:bg-gray-400">
+                            Close
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- IP Detail Modal (separate popup) -->
+        <div id="ipDetailModal" class="fixed inset-0 bg-black bg-opacity-50" style="display: none; z-index: 110;">
+            <div class="flex items-center justify-center min-h-screen p-4">
+                <div class="bg-white rounded-lg shadow-xl w-full max-w-5xl" style="max-height: 85vh; display: flex; flex-direction: column;">
+                    <div class="flex justify-between items-center p-6 border-b">
+                        <h3 class="text-xl font-semibold" id="ipDetailTitle">IP Details</h3>
+                        <button onclick="closeIPDetail()" class="text-gray-500 hover:text-gray-700 text-3xl leading-none">&times;</button>
+                    </div>
+
+                    <div id="ipDetailLoading" class="text-center py-8" style="display: none;">
+                        <div class="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-purple-600"></div>
+                        <span class="ml-2 text-gray-600">Loading...</span>
+                    </div>
+
+                    <div id="ipDetailContent" class="text-sm px-6 pt-2 pb-6" style="flex: 1; overflow: auto; min-height: 0;">
+                        <!-- Will be populated by JavaScript -->
+                    </div>
+
+                    <div class="p-6 border-t">
+                        <button onclick="closeIPDetail()"
+                                class="px-6 py-2 bg-gray-300 text-gray-700 rounded-lg hover:bg-gray-400">
+                            Close
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- IP Statistics Modal -->
+        <div id="ipStatisticsModal" class="fixed inset-0 bg-black bg-opacity-50" style="display: none; z-index: 100;">
+            <div class="flex items-center justify-center min-h-screen p-4">
+                <div class="bg-white rounded-lg shadow-xl w-full max-w-6xl" style="max-height: 90vh; display: flex; flex-direction: column;">
+                    <div class="p-6 border-b">
+                        <h2 class="text-2xl font-semibold mb-4">IP Statistics Query</h2>
+                        <div class="flex gap-2 mb-3">
+                            <input type="text" id="ipPrefixInput" placeholder="Enter IP prefix (e.g., 14.20.4.)"
+                                   class="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                                   onkeypress="if(event.key==='Enter') searchIPStatistics()">
+                            <button onclick="searchIPStatistics()"
+                                    class="px-6 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2">
+                                Search
+                            </button>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <input type="checkbox" id="dynamicOnlyCheckbox"
+                                   class="w-4 h-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500">
+                            <label for="dynamicOnlyCheckbox" class="text-sm text-gray-700 cursor-pointer">
+                                Dynamic only (only show IPs that accessed dynamic content)
+                            </label>
+                        </div>
+                    </div>
+
+                    <div id="ipStatisticsLoading" class="text-center py-8" style="display: none;">
+                        <div class="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600"></div>
+                        <span class="ml-2 text-gray-600">Loading...</span>
+                    </div>
+
+                    <div id="ipStatisticsContent" class="text-sm px-6 pt-2 pb-6" style="flex: 1; overflow: auto; min-height: 0;">
+                        <p class="text-gray-500 text-center py-8">Enter an IP prefix and click Search to view statistics</p>
+                    </div>
+
+                    <div class="p-6 border-t">
+                        <button onclick="closeIPStatistics()"
+                                class="px-6 py-2 bg-gray-300 text-gray-700 rounded-lg hover:bg-gray-400">
+                            Close
+                        </button>
                     </div>
                 </div>
             </div>
@@ -196,9 +577,9 @@
                 <div>
                     <div class="flex justify-between items-center mb-3">
                         <h4 class="text-lg font-medium text-red-700">Top Static-Only IPs (Suspicious)</h4>
-                        <button onclick="copyStaticIPsToClipboard()"
+                        <button onclick="showBlacklistDialog()"
                                 class="px-4 py-2 bg-red-600 text-white text-sm rounded-lg hover:bg-red-700 focus:ring-2 focus:ring-red-500 focus:ring-offset-2">
-                            📋 Copy IPs to Blacklist
+                            🚫 Generate IP Blacklist
                         </button>
                     </div>
                     <div class="overflow-x-auto">
@@ -315,6 +696,176 @@
         let currentEventSource = null;
         let hourlyTrafficChart = null;
         let cachePerformanceChart = null;
+        let originalRangeAnalysisLines = null;  // Store original IP range analysis results for client-side filtering
+
+        // Modal control functions
+        function showLoadDialog() {
+            document.getElementById('loadModal').classList.remove('hidden');
+            document.getElementById('loadModal').classList.add('flex');
+            document.getElementById('directoryPath').value = '/Users/xigua/Downloads/zhisai-logs';
+        }
+
+        function closeLoadDialog() {
+            document.getElementById('loadModal').classList.add('hidden');
+            document.getElementById('loadModal').classList.remove('flex');
+            document.getElementById('loadingIndicator').classList.add('hidden');
+        }
+
+        async function showAnalyzeDialog() {
+            // Check if cached analysis exists
+            try {
+                const response = await fetch('/api/analysis-cache');
+                const data = await response.json();
+
+                if (response.ok && data.results) {
+                    const cacheTime = new Date(data.created_at).toLocaleString();
+                    const startTime = data.start_time ? new Date(data.start_time).toLocaleString() : 'N/A';
+                    const endTime = data.end_time ? new Date(data.end_time).toLocaleString() : 'N/A';
+
+                    const confirmed = confirm(
+                        `Cached analysis results found (generated at ${cacheTime}).\n\n` +
+                        `Time range: ${startTime} to ${endTime}\n\n` +
+                        `Clicking OK will delete the cached results and regenerate the analysis.\n\n` +
+                        `Click Cancel to keep using the cached results.`
+                    );
+
+                    if (!confirmed) {
+                        return; // User chose to keep cached results
+                    }
+
+                    // User confirmed - delete cache
+                    await fetch('/api/analysis-cache', { method: 'DELETE' });
+                }
+            } catch (error) {
+                console.error('Error checking cache:', error);
+                // Continue to show dialog even if cache check fails
+            }
+
+            document.getElementById('analyzeModal').classList.remove('hidden');
+            document.getElementById('analyzeModal').classList.add('flex');
+
+            const startTime = document.getElementById('dbStartTime').textContent;
+            const endTime = document.getElementById('dbEndTime').textContent;
+
+            if (startTime !== '-' && startTime !== 'No data') {
+                const start = new Date(startTime);
+                document.getElementById('startTime').value = start.toISOString().slice(0, 16);
+            }
+
+            if (endTime !== '-' && endTime !== 'No data') {
+                const end = new Date(endTime);
+                document.getElementById('endTime').value = end.toISOString().slice(0, 16);
+            }
+        }
+
+        function closeAnalyzeDialog() {
+            document.getElementById('analyzeModal').classList.add('hidden');
+            document.getElementById('analyzeModal').classList.remove('flex');
+            document.getElementById('analyzeLoading').classList.add('hidden');
+        }
+
+        // Load logs function
+        async function startLoadLogs() {
+            const directoryPath = document.getElementById('directoryPath').value;
+            if (!directoryPath) {
+                alert('Please enter a directory path');
+                return;
+            }
+
+            document.getElementById('loadButton').disabled = true;
+            await analyzeDirectory();
+        }
+
+        async function startAnalyze() {
+            const startTime = document.getElementById('startTime').value;
+            const endTime = document.getElementById('endTime').value;
+
+            if (!startTime || !endTime) {
+                alert('Please select both start and end times');
+                return;
+            }
+
+            // Close any existing EventSource
+            if (currentEventSource) {
+                currentEventSource.close();
+                currentEventSource = null;
+            }
+
+            const analyzeLoading = document.getElementById('analyzeLoading');
+            const analyzeButton = document.getElementById('analyzeButton');
+            const analyzeProgress = document.getElementById('analyzeProgress');
+            const analyzeProgressBar = document.getElementById('analyzeProgressBar');
+            const analyzeProgressText = document.getElementById('analyzeProgressText');
+
+            analyzeLoading.classList.remove('hidden');
+            analyzeButton.disabled = true;
+
+            // First, send the POST request to start the analysis
+            try {
+                const response = await fetch('/api/analyze-range', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        start_time: new Date(startTime).toISOString(),
+                        end_time: new Date(endTime).toISOString()
+                    })
+                });
+
+                if (!response.ok) {
+                    throw new Error('Failed to start analysis');
+                }
+
+                // Read the SSE stream
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+
+                while (true) {
+                    const {done, value} = await reader.read();
+
+                    if (done) break;
+
+                    buffer += decoder.decode(value, {stream: true});
+                    const lines = buffer.split('\n\n');
+                    buffer = lines.pop(); // Keep incomplete line in buffer
+
+                    for (const line of lines) {
+                        if (line.startsWith('data: ')) {
+                            const data = JSON.parse(line.substring(6));
+
+                            // Update progress
+                            if (data.progress !== undefined) {
+                                const percent = Math.round(data.progress * 100);
+                                analyzeProgressBar.style.width = percent + '%';
+                                analyzeProgressText.textContent = data.message || `${percent}%`;
+                            }
+
+                            // Handle completion
+                            if (data.status === 'completed') {
+                                displayResults(data.results);
+                                document.getElementById('resultsContainer').classList.remove('hidden');
+                                closeAnalyzeDialog();
+                                analyzeLoading.classList.add('hidden');
+                                analyzeButton.disabled = false;
+                                break;
+                            }
+
+                            // Handle error
+                            if (data.status === 'error') {
+                                alert('Analysis failed: ' + data.message);
+                                analyzeLoading.classList.add('hidden');
+                                analyzeButton.disabled = false;
+                                break;
+                            }
+                        }
+                    }
+                }
+            } catch (error) {
+                alert('Analysis failed: ' + error.message);
+                analyzeLoading.classList.add('hidden');
+                analyzeButton.disabled = false;
+            }
+        }
 
         async function analyzeDirectory() {
             const directoryPath = document.getElementById('directoryPath').value;
@@ -371,10 +922,35 @@
                         currentEventSource = null;
                         clearInterval(progressInterval);
                         progressInterval = null;
-                        analysisData = progressData.results;  // Store the analysis data
-                        displayResults(progressData.results);
-                        resultsContainer.classList.remove('hidden');
+
+                        // Close the loading dialog
+                        closeLoadDialog();
+
+                        // Reload database statistics
+                        loadDbStats();
+
+                        // Re-enable load button
+                        document.getElementById('loadButton').disabled = false;
+
+                        alert('✅ Log files loaded successfully!');
+                    }
+
+                    // Handle error status
+                    if (progressData.status === 'error') {
+                        currentEventSource.close();
+                        currentEventSource = null;
+                        clearInterval(progressInterval);
+                        progressInterval = null;
                         loadingIndicator.classList.add('hidden');
+                        document.getElementById('loadButton').disabled = false;
+
+                        console.error('Error details:', progressData);
+                        let errorMsg = 'Error during processing:\n\n' + progressData.message;
+                        if (progressData.traceback) {
+                            console.error('Traceback:\n', progressData.traceback);
+                            errorMsg += '\n\nCheck browser console for detailed traceback.';
+                        }
+                        alert(errorMsg);
                     }
                 };
 
@@ -388,7 +964,9 @@
                         progressInterval = null;
                     }
                     loadingIndicator.classList.add('hidden');
-                    alert('Error during processing. Please try again.');
+                    document.getElementById('loadButton').disabled = false;
+                    console.error('EventSource error:', event);
+                    alert('Error during processing. Please check the server logs and browser console for details.');
                 };
 
             } catch (error) {
@@ -450,6 +1028,9 @@
         }
 
         function displayResults(data) {
+            // Show results container
+            document.getElementById('resultsContainer').classList.remove('hidden');
+
             // Update basic statistics
             document.getElementById('totalRequests').textContent = data.basic_stats.total_requests.toLocaleString();
             document.getElementById('uniqueIPs').textContent = data.basic_stats.unique_ips.toLocaleString();
@@ -798,94 +1379,728 @@
 
         // Global variable to store static-only IPs for blacklisting
         let staticOnlyIPList = [];
+        let blacklistData = null;
 
-        async function copyStaticIPsToClipboard() {
-            const button = event.target;
-            const originalText = button.innerHTML;
+        function showBlacklistDialog() {
+            document.getElementById('blacklistModal').classList.remove('hidden');
+            document.getElementById('blacklistModal').classList.add('flex');
 
+            // Set default filter value to 0 (show all IPs)
+            document.getElementById('blacklistMinTrafficMB').value = 0;
+
+            // Set initial status
+            document.getElementById('blacklistTotal').textContent = '-';
+            document.getElementById('blacklistOriginal').textContent = '-';
+            document.getElementById('blacklistOptimized').textContent = '-';
+            document.getElementById('blacklistContent').value = 'Enter a traffic threshold above and click "Apply Filter" to generate the IP blacklist.';
+            document.getElementById('blacklistFilterInfo').innerHTML = '<span class="font-medium">Status:</span> Ready to generate';
+
+            // Auto-load with default value
+            loadBlacklistData();
+        }
+
+        function closeBlacklistDialog() {
+            document.getElementById('blacklistModal').classList.add('hidden');
+            document.getElementById('blacklistModal').classList.remove('flex');
+        }
+
+        async function loadBlacklistData() {
             try {
-                // Show loading state
-                button.innerHTML = '⏳ Loading...';
-                button.disabled = true;
+                // Get min traffic threshold from input
+                const minTrafficMB = parseInt(document.getElementById('blacklistMinTrafficMB').value) || 0;
 
-                // Fetch all static-only IPs from the server
-                const response = await fetch('/api/static-only-ips');
+                if (minTrafficMB < 0) {
+                    alert('Minimum traffic must be non-negative');
+                    return;
+                }
+
+                // Show loading state
+                document.getElementById('blacklistTotal').textContent = 'Loading...';
+                document.getElementById('blacklistOriginal').textContent = '-';
+                document.getElementById('blacklistOptimized').textContent = '-';
+                document.getElementById('blacklistContent').value = 'Generating IP blacklist...';
+
+                // Fetch all static-only IPs from the server with filter
+                const response = await fetch(`/api/static-only-ips?min_traffic_mb=${minTrafficMB}`);
                 const data = await response.json();
 
                 if (!response.ok) {
                     throw new Error(data.error || 'Failed to fetch static-only IPs');
                 }
 
+                blacklistData = data;
                 const staticIPs = data.static_only_ips;
 
                 if (!staticIPs || staticIPs.length === 0) {
-                    alert('No static-only IPs found. All IPs are accessing dynamic content.');
+                    document.getElementById('blacklistTotal').textContent = '0';
+                    document.getElementById('blacklistOriginal').textContent = '0';
+                    document.getElementById('blacklistOptimized').textContent = '0';
+                    document.getElementById('blacklistContent').value = 'No static-only IPs found with the specified traffic threshold.\n\nTry:\n1. Running "Analyze Logs" first\n2. Lowering the traffic threshold';
+                    document.getElementById('blacklistFilterInfo').innerHTML = `<span class="font-medium text-orange-600">⚠️ No IPs found with traffic ≥ ${minTrafficMB} MB</span>`;
                     return;
                 }
 
-                // IPs are already sorted by the server
+                // Update statistics
+                const originalCount = data.original_count || 0;
+                const cidrCount = data.cidr_count || 0;
+                const actualCount = data.count || 0;
+
+                document.getElementById('blacklistTotal').textContent = actualCount.toLocaleString();
+                document.getElementById('blacklistOriginal').textContent = originalCount.toLocaleString();
+                document.getElementById('blacklistOptimized').textContent = cidrCount.toLocaleString();
+
+                // Update filter info (using minTrafficMB from above)
+                const filterInfo = document.getElementById('blacklistFilterInfo');
+                if (minTrafficMB > 0) {
+                    filterInfo.innerHTML = `<span class="font-medium">Filter:</span> <span class="text-blue-600 font-semibold">Showing IPs with traffic ≥ ${minTrafficMB} MB</span>`;
+                } else {
+                    filterInfo.innerHTML = `<span class="font-medium">Filter:</span> Showing all IPs`;
+                }
+
+                // Display IP list
                 const ipListText = staticIPs.join('\n');
+                document.getElementById('blacklistContent').value = ipListText;
+
+            } catch (error) {
+                alert('Error fetching static-only IPs: ' + error.message);
+                closeBlacklistDialog();
+            }
+        }
+
+        async function copyBlacklistToClipboard() {
+            const button = document.getElementById('copyBlacklistBtn');
+            const originalText = button.innerHTML;
+
+            try {
+                const ipListText = document.getElementById('blacklistContent').value;
+
+                if (!ipListText) {
+                    alert('No IPs to copy');
+                    return;
+                }
 
                 // Copy to clipboard
                 await navigator.clipboard.writeText(ipListText);
 
                 // Show success message
                 button.innerHTML = '✅ Copied!';
-                button.classList.remove('bg-red-600', 'hover:bg-red-700');
+                button.classList.remove('bg-blue-600', 'hover:bg-blue-700');
                 button.classList.add('bg-green-600', 'hover:bg-green-700');
 
                 setTimeout(() => {
                     button.innerHTML = originalText;
                     button.classList.remove('bg-green-600', 'hover:bg-green-700');
-                    button.classList.add('bg-red-600', 'hover:bg-red-700');
-                    button.disabled = false;
+                    button.classList.add('bg-blue-600', 'hover:bg-blue-700');
                 }, 2000);
 
-                // Show success alert with count and optimization info
-                const originalCount = data.original_count || staticIPs.length;
-                const optimizationMessage = originalCount > staticIPs.length
-                    ? `\n\n🎯 Optimization: ${originalCount} individual IPs optimized to ${staticIPs.length} entries (C-class subnets with 4+ IPs converted to /24 CIDR blocks)`
-                    : '';
-
-                alert(`✅ Copied ${staticIPs.length} blacklist entries to clipboard!${optimizationMessage}\n\nThese IP addresses/ranges only access static files and never make API calls.`);
-
             } catch (error) {
-                // Handle errors
-                button.innerHTML = originalText;
-                button.disabled = false;
-
-                // Fallback: try to use the displayed IPs if API fails
-                if (staticOnlyIPList && staticOnlyIPList.length > 0) {
-                    const uniqueIPs = [...new Set(staticOnlyIPList.map(item => item.ip))];
-                    uniqueIPs.sort((a, b) => {
-                        const aParts = a.split('.').map(num => parseInt(num, 10));
-                        const bParts = b.split('.').map(num => parseInt(num, 10));
-                        for (let i = 0; i < 4; i++) {
-                            if (aParts[i] !== bParts[i]) return aParts[i] - bParts[i];
-                        }
-                        return 0;
-                    });
-
-                    const ipListText = uniqueIPs.join('\n');
-
-                    // Try clipboard API, fallback to textarea
-                    try {
-                        await navigator.clipboard.writeText(ipListText);
-                        alert(`⚠️ Used displayed IPs only. Copied ${uniqueIPs.length} IP addresses to clipboard.`);
-                    } catch {
-                        const textArea = document.createElement('textarea');
-                        textArea.value = ipListText;
-                        document.body.appendChild(textArea);
-                        textArea.select();
-                        document.execCommand('copy');
-                        document.body.removeChild(textArea);
-                        alert(`⚠️ Used displayed IPs only. Copied ${uniqueIPs.length} IP addresses to clipboard.`);
-                    }
-                } else {
-                    alert('❌ Error: ' + error.message);
-                }
+                alert('Failed to copy to clipboard: ' + error.message);
             }
         }
+
+        // IP Range Analysis Functions
+        function showRangeAnalysisDialog() {
+            document.getElementById('rangeAnalysisModal').classList.remove('hidden');
+            document.getElementById('rangeAnalysisModal').classList.add('flex');
+
+            // Set default filter value to 0 (show all IPs)
+            document.getElementById('rangeAnalysisMinTrafficMB').value = 0;
+
+            // Set initial status
+            document.getElementById('rangeAnalysisTotal').textContent = '-';
+            document.getElementById('rangeAnalysisSubnets').textContent = '-';
+            document.getElementById('rangeAnalysisIndividual').textContent = '-';
+            document.getElementById('rangeAnalysisContent').value = 'Enter a traffic threshold above and click "Apply Filter" to start the analysis.';
+            document.getElementById('rangeAnalysisFilterInfo').innerHTML = '<span class="font-medium">Status:</span> Ready to analyze';
+
+            // Auto-load with default value
+            loadRangeAnalysisData();
+        }
+
+        function closeRangeAnalysisDialog() {
+            document.getElementById('rangeAnalysisModal').classList.add('hidden');
+            document.getElementById('rangeAnalysisModal').classList.remove('flex');
+        }
+
+        async function loadRangeAnalysisData() {
+            try {
+                // Get min traffic threshold from input
+                const minTrafficMB = parseInt(document.getElementById('rangeAnalysisMinTrafficMB').value) || 0;
+
+                if (minTrafficMB < 0) {
+                    alert('Minimum traffic must be non-negative');
+                    return;
+                }
+
+                // Show loading state
+                document.getElementById('rangeAnalysisTotal').textContent = 'Loading...';
+                document.getElementById('rangeAnalysisSubnets').textContent = '-';
+                document.getElementById('rangeAnalysisIndividual').textContent = '-';
+                document.getElementById('rangeAnalysisContent').value = 'Analyzing IP ranges...';
+
+                // Fetch IP range analysis from the server with filter
+                const response = await fetch(`/api/ip-range-analysis?min_traffic_mb=${minTrafficMB}`);
+                const data = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(data.error || 'Failed to fetch IP range analysis');
+                }
+
+                const analysisLines = data.analysis_lines;
+
+                if (!analysisLines || analysisLines.length === 0) {
+                    document.getElementById('rangeAnalysisTotal').textContent = '0';
+                    document.getElementById('rangeAnalysisSubnets').textContent = '0';
+                    document.getElementById('rangeAnalysisIndividual').textContent = '0';
+                    document.getElementById('rangeAnalysisContent').value = 'No suspicious IP ranges found with the specified traffic threshold.\n\nTry:\n1. Running "Analyze Logs" first\n2. Lowering the traffic threshold';
+                    document.getElementById('rangeAnalysisFilterInfo').innerHTML = `<span class="font-medium text-orange-600">⚠️ No IPs found with traffic ≥ ${minTrafficMB} MB</span>`;
+                    return;
+                }
+
+                // Update statistics
+                const totalEntries = data.total_entries || 0;
+                const suspiciousSubnets = data.suspicious_subnet_count || 0;
+                const individualIPs = data.individual_ip_count || 0;
+
+                document.getElementById('rangeAnalysisTotal').textContent = totalEntries.toLocaleString();
+                document.getElementById('rangeAnalysisSubnets').textContent = suspiciousSubnets.toLocaleString();
+                document.getElementById('rangeAnalysisIndividual').textContent = individualIPs.toLocaleString();
+
+                // Update filter info
+                const filterInfo = document.getElementById('rangeAnalysisFilterInfo');
+                if (minTrafficMB > 0) {
+                    filterInfo.innerHTML = `<span class="font-medium">Filter:</span> <span class="text-orange-600 font-semibold">Showing IPs with traffic ≥ ${minTrafficMB} MB</span>`;
+                } else {
+                    filterInfo.innerHTML = `<span class="font-medium">Filter:</span> Showing all IPs`;
+                }
+
+                // Save original analysis results for client-side filtering
+                originalRangeAnalysisLines = analysisLines.slice();  // Create a copy
+
+                // Display analysis results
+                const analysisText = analysisLines.join('\n');
+                document.getElementById('rangeAnalysisContent').value = analysisText;
+
+                // Reset client-side filter input
+                document.getElementById('rangeAnalysisClientFilterMB').value = 0;
+
+            } catch (error) {
+                alert('Error fetching IP range analysis: ' + error.message);
+                closeRangeAnalysisDialog();
+            }
+        }
+
+        function applyClientSideTrafficFilter() {
+            if (!originalRangeAnalysisLines || originalRangeAnalysisLines.length === 0) {
+                alert('No analysis results to filter. Please run analysis first.');
+                return;
+            }
+
+            const filterMB = parseInt(document.getElementById('rangeAnalysisClientFilterMB').value) || 0;
+
+            if (filterMB < 0) {
+                alert('Filter value must be non-negative');
+                return;
+            }
+
+            // Filter the original lines based on traffic
+            const filteredLines = [];
+            let subnetCount = 0;
+            let individualIPCount = 0;
+
+            for (const line of originalRangeAnalysisLines) {
+                // Skip comment lines and section headers
+                if (line.startsWith('#')) {
+                    filteredLines.push(line);
+                    continue;
+                }
+
+                // Skip empty lines
+                if (line.trim() === '') {
+                    filteredLines.push(line);
+                    continue;
+                }
+
+                // Parse traffic from line
+                // Expected format: "IP/CIDR    TRAFFIC MB    ..."
+                // Traffic is in the second column, format: "123.45 MB"
+                const match = line.match(/\s+([\d.]+)\s+MB/);
+
+                if (match) {
+                    const trafficMB = parseFloat(match[1]);
+
+                    if (trafficMB >= filterMB) {
+                        filteredLines.push(line);
+
+                        // Count entries (skip comment lines)
+                        if (line.includes('/')) {
+                            // This is a subnet (contains CIDR notation)
+                            subnetCount++;
+                        } else {
+                            // This is an individual IP
+                            individualIPCount++;
+                        }
+                    }
+                } else {
+                    // If we can't parse traffic, include the line (might be header or other info)
+                    filteredLines.push(line);
+                }
+            }
+
+            // Update display
+            const totalEntries = subnetCount + individualIPCount;
+            document.getElementById('rangeAnalysisTotal').textContent = totalEntries.toLocaleString();
+            document.getElementById('rangeAnalysisSubnets').textContent = subnetCount.toLocaleString();
+            document.getElementById('rangeAnalysisIndividual').textContent = individualIPCount.toLocaleString();
+
+            // Update content
+            document.getElementById('rangeAnalysisContent').value = filteredLines.join('\n');
+
+            // Update filter info
+            const filterInfo = document.getElementById('rangeAnalysisFilterInfo');
+            if (filterMB > 0) {
+                filterInfo.innerHTML = `<span class="font-medium">Client-side Filter:</span> <span class="text-green-600 font-semibold">Showing entries with traffic ≥ ${filterMB} MB</span>`;
+            } else {
+                filterInfo.innerHTML = `<span class="font-medium">Client-side Filter:</span> Showing all entries`;
+            }
+        }
+
+        function resetClientSideFilter() {
+            if (!originalRangeAnalysisLines || originalRangeAnalysisLines.length === 0) {
+                alert('No analysis results to reset.');
+                return;
+            }
+
+            // Reset input
+            document.getElementById('rangeAnalysisClientFilterMB').value = 0;
+
+            // Restore original results
+            document.getElementById('rangeAnalysisContent').value = originalRangeAnalysisLines.join('\n');
+
+            // Recalculate statistics from original data
+            let subnetCount = 0;
+            let individualIPCount = 0;
+
+            for (const line of originalRangeAnalysisLines) {
+                if (line.startsWith('#') || line.trim() === '') {
+                    continue;
+                }
+
+                if (line.includes('/')) {
+                    subnetCount++;
+                } else if (line.match(/\s+[\d.]+\s+MB/)) {
+                    individualIPCount++;
+                }
+            }
+
+            const totalEntries = subnetCount + individualIPCount;
+            document.getElementById('rangeAnalysisTotal').textContent = totalEntries.toLocaleString();
+            document.getElementById('rangeAnalysisSubnets').textContent = subnetCount.toLocaleString();
+            document.getElementById('rangeAnalysisIndividual').textContent = individualIPCount.toLocaleString();
+
+            // Reset filter info
+            document.getElementById('rangeAnalysisFilterInfo').innerHTML = `<span class="font-medium">Filter:</span> Showing all entries`;
+        }
+
+        async function copyRangeAnalysisToClipboard() {
+            const button = document.getElementById('copyRangeAnalysisBtn');
+            const originalText = button.innerHTML;
+
+            try {
+                const analysisText = document.getElementById('rangeAnalysisContent').value;
+
+                if (!analysisText) {
+                    alert('No analysis results to copy');
+                    return;
+                }
+
+                // Copy to clipboard
+                await navigator.clipboard.writeText(analysisText);
+
+                // Show success message
+                button.innerHTML = '✅ Copied!';
+                button.classList.remove('bg-orange-600', 'hover:bg-orange-700');
+                button.classList.add('bg-green-600', 'hover:bg-green-700');
+
+                setTimeout(() => {
+                    button.innerHTML = originalText;
+                    button.classList.remove('bg-green-600', 'hover:bg-green-700');
+                    button.classList.add('bg-orange-600', 'hover:bg-orange-700');
+                }, 2000);
+
+            } catch (error) {
+                alert('Failed to copy to clipboard: ' + error.message);
+            }
+        }
+
+        async function showDeepAnalysis() {
+            // Show modal
+            const modal = document.getElementById('deepAnalysisModal');
+            modal.style.display = 'block';
+            modal.classList.remove('hidden');
+            document.getElementById('deepAnalysisLoading').classList.remove('hidden');
+            document.getElementById('deepAnalysisResults').classList.add('hidden');
+
+            try {
+                const response = await fetch('/api/deep-analysis');
+                const data = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(data.error || 'Failed to fetch deep analysis');
+                }
+
+                // Hide loading, show results
+                document.getElementById('deepAnalysisLoading').classList.add('hidden');
+                document.getElementById('deepAnalysisResults').classList.remove('hidden');
+
+                // Populate table
+                const tbody = document.getElementById('deepAnalysisTableBody');
+                tbody.innerHTML = '';
+
+                if (!data.subnets || data.subnets.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="3" class="px-4 py-8 text-center text-gray-500">No data available</td></tr>';
+                    return;
+                }
+
+                for (const subnet of data.subnets) {
+                    const row = document.createElement('tr');
+                    row.className = 'border-b hover:bg-gray-50';
+
+                    // Column 1: Subnet and count
+                    const subnetCell = document.createElement('td');
+                    subnetCell.className = 'px-4 py-3';
+                    subnetCell.innerHTML = `
+                        <div class="font-semibold text-blue-600">${subnet.subnet}.0/24</div>
+                        <div class="text-xs text-gray-600">${subnet.static_only_count} static-only IPs</div>
+                    `;
+                    row.appendChild(subnetCell);
+
+                    // Column 2: Static-only IPs (clickable)
+                    const staticCell = document.createElement('td');
+                    staticCell.className = 'px-4 py-3';
+                    const staticIpLinks = subnet.static_only_ips.map(ip =>
+                        `<span class="cursor-pointer text-blue-600 hover:underline" onclick="showIPDetail('${ip}')">${ip}</span>`
+                    ).join(', ');
+                    staticCell.innerHTML = `<div class="text-xs font-mono">${staticIpLinks}</div>`;
+                    row.appendChild(staticCell);
+
+                    // Column 3: Mixed IPs (clickable)
+                    const mixedCell = document.createElement('td');
+                    mixedCell.className = 'px-4 py-3';
+                    if (subnet.mixed_count > 0) {
+                        const mixedIpLinks = subnet.mixed_ips.map(ip =>
+                            `<span class="cursor-pointer text-red-600 hover:underline" onclick="showIPDetail('${ip}')">${ip}</span>`
+                        ).join(', ');
+                        mixedCell.innerHTML = `
+                            <div class="text-xs font-mono">${mixedIpLinks}</div>
+                            <div class="text-xs text-gray-500 mt-1">${subnet.mixed_count} IP(s) accessing dynamic content</div>
+                        `;
+                    } else {
+                        mixedCell.innerHTML = '<div class="text-xs text-green-600">None (should be /24)</div>';
+                    }
+                    row.appendChild(mixedCell);
+
+                    tbody.appendChild(row);
+                }
+
+            } catch (error) {
+                document.getElementById('deepAnalysisLoading').classList.add('hidden');
+                alert('Error loading deep analysis: ' + error.message);
+                closeDeepAnalysis();
+            }
+        }
+
+        function closeDeepAnalysis() {
+            const modal = document.getElementById('deepAnalysisModal');
+            modal.style.display = 'none';
+            modal.classList.add('hidden');
+        }
+
+        async function showIPDetail(ip) {
+            const modal = document.getElementById('ipDetailModal');
+            const title = document.getElementById('ipDetailTitle');
+            const loading = document.getElementById('ipDetailLoading');
+            const content = document.getElementById('ipDetailContent');
+
+            // Show modal and loading
+            modal.style.display = 'block';
+            loading.style.display = 'block';
+            content.innerHTML = '';
+            title.textContent = `IP: ${ip}`;
+
+            try {
+                // Fetch both IP logs and geo location in parallel
+                const [logsResponse, geoResponse] = await Promise.all([
+                    fetch(`/api/ip-logs/${encodeURIComponent(ip)}`),
+                    fetch(`/api/geo-location-by-ip?ip=${encodeURIComponent(ip)}`)
+                ]);
+
+                const data = await logsResponse.json();
+                const geoData = await geoResponse.json();
+
+                loading.style.display = 'none';
+
+                if (!logsResponse.ok) {
+                    throw new Error(data.error || 'Failed to fetch IP logs');
+                }
+
+                if (!data.logs || data.logs.length === 0) {
+                    content.innerHTML = '<p class="text-gray-500 text-center py-4">No logs found for this IP</p>';
+                    return;
+                }
+
+                // Create geo location info section
+                let geoHtml = '';
+                if (geoResponse.ok && !geoData.error) {
+                    geoHtml = `
+                        <div class="mb-4 p-3 bg-blue-50 rounded-lg">
+                            <h3 class="text-sm font-semibold text-gray-700 mb-2">Geo Location (C-Class: ${geoData.c_class_subnet})</h3>
+                            <div class="grid grid-cols-2 gap-2 text-sm">
+                                <div><span class="font-medium">Country:</span> ${geoData.country || 'N/A'}</div>
+                                <div><span class="font-medium">Region:</span> ${geoData.region || 'N/A'}</div>
+                                <div><span class="font-medium">City:</span> ${geoData.city || 'N/A'}</div>
+                                <div><span class="font-medium">ISP:</span> ${geoData.isp || 'N/A'}</div>
+                                <div class="col-span-2"><span class="font-medium">Org:</span> ${geoData.org || 'N/A'}</div>
+                                <div class="col-span-2"><span class="font-medium">AS:</span> ${geoData.as_info || 'N/A'}</div>
+                            </div>
+                            ${geoData.cached ? '<div class="text-xs text-gray-500 mt-2">Cached from database</div>' : '<div class="text-xs text-green-600 mt-2">Freshly fetched and cached</div>'}
+                        </div>
+                    `;
+                }
+
+                // Create log entries using table format (matching main page IP analysis)
+                const totalTrafficMB = (data.logs.reduce((sum, log) => sum + log.response_size, 0) / (1024 * 1024)).toFixed(2);
+
+                let html = `
+                    ${geoHtml}
+                    <div class="mb-4 text-sm text-gray-600">
+                        <span class="font-semibold">${data.total_requests}</span> requests found,
+                        total traffic: <span class="font-semibold">${totalTrafficMB} MB</span>,
+                        sorted by time (oldest first)
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="min-w-full divide-y divide-gray-200">
+                            <thead class="bg-gray-50 sticky top-0">
+                                <tr>
+                                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Time</th>
+                                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Method</th>
+                                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">URL</th>
+                                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Response Time</th>
+                                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Response Size</th>
+                                </tr>
+                            </thead>
+                            <tbody class="bg-white divide-y divide-gray-200">
+                `;
+
+                for (const log of data.logs) {
+                    const timestamp = new Date(log.timestamp);
+                    const formattedTime = `${timestamp.getMonth()+1}/${timestamp.getDate()}/${timestamp.getFullYear()}, ${String(timestamp.getHours()).padStart(2,'0')}:${String(timestamp.getMinutes()).padStart(2,'0')}:${String(timestamp.getSeconds()).padStart(2,'0')} ${timestamp.getHours() >= 12 ? 'PM' : 'AM'}`;
+                    const statusClass = log.status_code === 200 ? 'text-green-600' : 'text-red-600';
+                    const sizeKB = (log.response_size / 1024).toFixed(2);
+
+                    html += `
+                        <tr class="hover:bg-gray-50">
+                            <td class="px-3 py-2 whitespace-nowrap text-sm text-gray-900">${formattedTime}</td>
+                            <td class="px-3 py-2 whitespace-nowrap text-sm text-gray-900">${log.method}</td>
+                            <td class="px-3 py-2 text-sm text-blue-600 hover:underline" style="max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${log.url}">${log.url}</td>
+                            <td class="px-3 py-2 whitespace-nowrap text-sm font-medium ${statusClass}">${log.status_code}</td>
+                            <td class="px-3 py-2 whitespace-nowrap text-sm text-gray-900">${log.response_time}ms</td>
+                            <td class="px-3 py-2 whitespace-nowrap text-sm text-gray-900">${sizeKB} KB</td>
+                        </tr>
+                    `;
+                }
+
+                html += `
+                            </tbody>
+                        </table>
+                    </div>
+                `;
+                content.innerHTML = html;
+
+            } catch (error) {
+                loading.style.display = 'none';
+                content.innerHTML = `<p class="text-red-500 text-center py-4">Error: ${error.message}</p>`;
+            }
+        }
+
+        function closeIPDetail() {
+            const modal = document.getElementById('ipDetailModal');
+            modal.style.display = 'none';
+        }
+
+        function showIPStatistics() {
+            const modal = document.getElementById('ipStatisticsModal');
+            modal.style.display = 'block';
+            document.getElementById('ipPrefixInput').focus();
+        }
+
+        function closeIPStatistics() {
+            const modal = document.getElementById('ipStatisticsModal');
+            modal.style.display = 'none';
+            document.getElementById('ipStatisticsContent').innerHTML = '<p class="text-gray-500 text-center py-8">Enter an IP prefix and click Search to view statistics</p>';
+        }
+
+        async function searchIPStatistics() {
+            const prefix = document.getElementById('ipPrefixInput').value.trim();
+            if (!prefix) {
+                alert('Please enter an IP prefix');
+                return;
+            }
+
+            const dynamicOnly = document.getElementById('dynamicOnlyCheckbox').checked;
+
+            const loading = document.getElementById('ipStatisticsLoading');
+            const content = document.getElementById('ipStatisticsContent');
+
+            loading.style.display = 'block';
+            content.innerHTML = '';
+
+            try {
+                const url = `/api/ip-statistics?prefix=${encodeURIComponent(prefix)}&dynamic_only=${dynamicOnly}`;
+                const response = await fetch(url);
+                const data = await response.json();
+
+                loading.style.display = 'none';
+
+                if (!response.ok) {
+                    throw new Error(data.error || 'Failed to fetch IP statistics');
+                }
+
+                if (!data.statistics || data.statistics.length === 0) {
+                    const filterMsg = dynamicOnly ? ' (with dynamic content access)' : '';
+                    content.innerHTML = `<p class="text-gray-500 text-center py-8">No IPs found matching this prefix${filterMsg}</p>`;
+                    return;
+                }
+
+                // Create table
+                const filterMsg = dynamicOnly ? ' <span class="text-indigo-600">(dynamic only)</span>' : '';
+                let html = `
+                    <div class="mb-4 text-sm text-gray-600">
+                        Found <span class="font-semibold">${data.statistics.length}</span> IP(s) matching prefix "<span class="font-mono font-semibold">${prefix}</span>"${filterMsg}
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="min-w-full divide-y divide-gray-200">
+                            <thead class="bg-gray-50 sticky top-0">
+                                <tr>
+                                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">IP</th>
+                                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Total Requests</th>
+                                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Total Traffic</th>
+                                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Unique URLs</th>
+                                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Static Req</th>
+                                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Dynamic Req</th>
+                                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Type</th>
+                                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">First Seen</th>
+                                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Last Seen</th>
+                                </tr>
+                            </thead>
+                            <tbody class="bg-white divide-y divide-gray-200">
+                `;
+
+                for (const stat of data.statistics) {
+                    const trafficMB = (stat.total_response_size / (1024 * 1024)).toFixed(2);
+                    const typeClass = stat.is_static_only ? 'text-green-600' : 'text-orange-600';
+                    const typeText = stat.is_static_only ? 'Static Only' : 'Mixed';
+                    const firstSeen = new Date(stat.first_seen).toLocaleString();
+                    const lastSeen = new Date(stat.last_seen).toLocaleString();
+
+                    html += `
+                        <tr class="hover:bg-gray-50">
+                            <td class="px-3 py-2 whitespace-nowrap text-sm font-mono text-blue-600 cursor-pointer hover:underline" onclick="showIPDetail('${stat.ip}')">${stat.ip}</td>
+                            <td class="px-3 py-2 whitespace-nowrap text-sm text-gray-900">${stat.total_requests.toLocaleString()}</td>
+                            <td class="px-3 py-2 whitespace-nowrap text-sm text-gray-900">${trafficMB} MB</td>
+                            <td class="px-3 py-2 whitespace-nowrap text-sm text-gray-900">${stat.unique_urls}</td>
+                            <td class="px-3 py-2 whitespace-nowrap text-sm text-gray-900">${stat.static_requests}</td>
+                            <td class="px-3 py-2 whitespace-nowrap text-sm text-gray-900">${stat.dynamic_requests}</td>
+                            <td class="px-3 py-2 whitespace-nowrap text-sm font-medium ${typeClass}">${typeText}</td>
+                            <td class="px-3 py-2 whitespace-nowrap text-sm text-gray-600">${firstSeen}</td>
+                            <td class="px-3 py-2 whitespace-nowrap text-sm text-gray-600">${lastSeen}</td>
+                        </tr>
+                    `;
+                }
+
+                html += `
+                            </tbody>
+                        </table>
+                    </div>
+                `;
+                content.innerHTML = html;
+
+            } catch (error) {
+                loading.style.display = 'none';
+                content.innerHTML = `<p class="text-red-500 text-center py-8">Error: ${error.message}</p>`;
+            }
+        }
+
+
+        // Load database statistics on page load
+        async function loadDbStats() {
+            try {
+                const response = await fetch('/api/db-stats');
+                const data = await response.json();
+
+                if (data.error) {
+                    console.error('Error loading DB stats:', data.error);
+                    return;
+                }
+
+                // Update UI
+                document.getElementById('dbTotalLogs').textContent = data.total_logs.toLocaleString();
+
+                if (data.start_time) {
+                    const startDate = new Date(data.start_time);
+                    // Format date with local timezone
+                    const formatted = startDate.getFullYear() + '/' +
+                                     String(startDate.getMonth() + 1).padStart(2, '0') + '/' +
+                                     String(startDate.getDate()).padStart(2, '0') + ', ' +
+                                     String(startDate.getHours()).padStart(2, '0') + ':' +
+                                     String(startDate.getMinutes()).padStart(2, '0') + ':' +
+                                     String(startDate.getSeconds()).padStart(2, '0');
+                    document.getElementById('dbStartTime').textContent = formatted;
+                } else {
+                    document.getElementById('dbStartTime').textContent = 'No data';
+                }
+
+                if (data.end_time) {
+                    const endDate = new Date(data.end_time);
+                    // Format date with local timezone
+                    const formatted = endDate.getFullYear() + '/' +
+                                     String(endDate.getMonth() + 1).padStart(2, '0') + '/' +
+                                     String(endDate.getDate()).padStart(2, '0') + ', ' +
+                                     String(endDate.getHours()).padStart(2, '0') + ':' +
+                                     String(endDate.getMinutes()).padStart(2, '0') + ':' +
+                                     String(endDate.getSeconds()).padStart(2, '0');
+                    document.getElementById('dbEndTime').textContent = formatted;
+                } else {
+                    document.getElementById('dbEndTime').textContent = 'No data';
+                }
+            } catch (error) {
+                console.error('Failed to load DB stats:', error);
+                document.getElementById('dbTotalLogs').textContent = 'Error';
+                document.getElementById('dbStartTime').textContent = 'Error';
+                document.getElementById('dbEndTime').textContent = 'Error';
+            }
+        }
+
+        async function loadCachedAnalysis() {
+            try {
+                const response = await fetch('/api/analysis-cache');
+                const data = await response.json();
+
+                if (response.ok && data.results) {
+                    console.log('Cached analysis found, displaying results...');
+                    displayResults(data.results);
+                } else {
+                    console.log('No cached analysis results found');
+                }
+            } catch (error) {
+                console.error('Error loading cached analysis:', error);
+            }
+        }
+
+        // Load DB stats and cached analysis on page load
+        loadDbStats();
+        loadCachedAnalysis();
 
         // Set default directory path
         document.getElementById('directoryPath').value = '/Users/xigua/Downloads/zhisai-logs';
